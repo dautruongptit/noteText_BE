@@ -1,0 +1,17 @@
+# ==========================================================
+# application-dev.yml — override khi SPRING_PROFILES_ACTIVE=dev
+#
+# Spring Boot tu dong nap file nay CHONG LEN application.yml (khong thay the
+# hoan toan) khi profile "dev" duoc kich hoat - chi can khai bao NHUNG gia
+# tri MUON KHAC voi mac dinh, khong can lap lai toan bo application.yml.
+# ==========================================================
+
+spring:
+  jpa:
+    show-sql: true   # in ra console cau SQL that su Hibernate chay - tien debug query luc dev
+    repair-check-checksum: false
+logging:
+  level:
+    com.noted.backend: DEBUG
+    org.springframework.security: DEBUG   # chi tiet hon o dev de debug luong OAuth2/JWT
+    org.hibernate.SQL: DEBUG

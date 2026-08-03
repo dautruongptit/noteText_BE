@@ -1,0 +1,61 @@
+version: "3.8"
+
+networks:
+  dev-network:
+    external: true   # da tao san bang: docker network create dev-network
+
+services:
+  mysql8:
+    image: mysql:8.0
+    container_name: mysql8
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # QUAN TRONG: dung CHUNG bien DB_PASSWORD/DB_NAME voi service noted-backend
+      # ben duoi - truoc day 2 noi hard-code RIENG RE nhau (mysql8 luon la
+      # "1234567890" bat ke .env noi gi), doi DB_PASSWORD trong .env.production
+      # se lam backend KHONG CON KET NOI DUOC vao DB (sai mat khau). Da sua.
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-1234567890}
+      MYSQL_DATABASE: ${DB_NAME:-noted_db}
+    # Luu y production: expose thang port 3306 ra host co the khong an toan
+    # neu server co IP cong khai - can nhac gioi han qua firewall/security
+    # group, hoac bo hoan toan phan "ports" nay (backend van ket noi duoc qua
+    # dev-network noi bo ma khong can mo port 3306 ra ngoai).
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - dev-network
+
+  noted-backend:
+    build: .
+    container_name: noted-backend
+    restart: unless-stopped
+    depends_on:
+      - mysql8
+    env_file:
+      - .env
+    environment:
+      # QUAN TRONG: dung ${VAR:-default} (khong hard-code gia tri thang) de
+      # noi dung THAT trong .env (copy tu .env.development hoac .env.production)
+      # duoc uu tien dung - Docker Compose uu tien "environment:" cao hon
+      # "env_file:", nen neu ghi thang "1234567890" o day, no se GHI DE moi
+      # gia tri DB_PASSWORD khac trong .env.production, du ban co doi gi
+      # trong do cung vo ich (day la loi da phat hien va sua o day).
+      DB_HOST: ${DB_HOST:-mysql8}
+      DB_NAME: ${DB_NAME:-noted_db}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-1234567890}
+      SERVER_PORT: ${SERVER_PORT:-8085}
+    ports:
+      - "8085:8085"
+    volumes:
+      # Thu muc luu file that tren Ubuntu host, mount vao container
+      - /data/noted/notes:/data/noted/notes
+    networks:
+      - dev-network
+
+volumes:
+  mysql_data:

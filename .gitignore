@@ -1,0 +1,24 @@
+# Build
+target/
+*.class
+
+# Env / secrets - TUYET DOI khong commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+
+# Logs
+*.log

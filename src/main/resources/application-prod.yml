@@ -1,0 +1,27 @@
+# ==========================================================
+# application-prod.yml — override khi SPRING_PROFILES_ACTIVE=prod
+#
+# Chi khai bao NHUNG gia tri can KHAC voi application.yml mac dinh (von da
+# thien ve dev-friendly) - production can log gon hon, khong lo chi tiet
+# SQL/security, va dam bao chay dung sau reverse proxy (nginx, SEC-07).
+# ==========================================================
+
+server:
+  # QUAN TRONG khi chay sau nginx reverse proxy (SEC-07): dam bao Spring doc
+  # dung header X-Forwarded-For / X-Forwarded-Proto tu nginx de biet dia chi
+  # IP that cua client va scheme that (https) - neu thieu dong nay, cac cho
+  # dung request.getRemoteAddr()/isSecure() (VD log, redirect URL dung scheme
+  # sai) se nhan gia tri SAI (thay vi IP/scheme that cua nguoi dung, se thay
+  # IP/scheme cua chinh container nginx).
+  forward-headers-strategy: framework
+
+spring:
+  jpa:
+    show-sql: false
+
+logging:
+  level:
+    root: WARN
+    com.noted.backend: INFO
+    org.springframework.security: WARN
+    org.hibernate.SQL: WARN

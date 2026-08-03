@@ -1,0 +1,130 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+spring:
+  application:
+    name: noted-backend
+
+  datasource:
+    url: jdbc:mysql://${DB_HOST:mysql8}:3306/${DB_NAME:noted_db}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:1234567890}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    hibernate:
+      ddl-auto: validate      # schema quan ly boi Flyway, khong de Hibernate tu sinh
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - openid
+              - email
+              - profile
+              - https://www.googleapis.com/auth/drive.file
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            authorization-grant-type: authorization_code
+        provider:
+          google:
+            authorization-uri: https://accounts.google.com/o/oauth2/v2/auth
+            token-uri: https://oauth2.googleapis.com/token
+            user-info-uri: https://www.googleapis.com/oauth2/v3/userinfo
+            # them params de luon nhan duoc refresh_token
+            user-name-attribute: sub
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+app:
+  frontend-redirect-url: ${FRONTEND_REDIRECT_URL:http://localhost:5175/oauth/callback}
+
+  crypto:
+    # Base64 cua 32 byte (AES-256). Sinh bang: openssl rand -base64 32
+    secret-key: ${CRYPTO_SECRET_KEY}
+
+  jwt:
+    secret: ${JWT_SECRET:change-this-to-a-long-random-secret-at-least-256-bits}
+    access-token-expiration-ms: 3600000        # 1 gio
+    refresh-token-expiration-ms: 2592000000    # 30 ngay
+    # Bat = true khi chay production qua HTTPS (bat buoc di kem SameSite=None).
+    # Tat = false khi dev local qua http (dung SameSite=Lax thay the).
+    refresh-cookie-secure: ${REFRESH_COOKIE_SECURE:false}
+
+  cors:
+    # Frontend doi sang port 5175 (5173/3000 da bi chiem)
+    allowed-origins: ${ALLOWED_ORIGINS:http://localhost:5175}
+
+  storage:
+    # Thu muc goc luu file that tren Ubuntu server, ngoai webroot
+    base-path: ${STORAGE_BASE_PATH:/data/noted/notes}
+    max-file-size-bytes: 5242880   # 5MB moi note
+
+  notes:
+    # Sau bao nhieu ngay ke tu luc soft-delete (deletedAt) thi note bi XOA
+    # VINH VIEN (ca file vat ly tren disk lan record trong DB) - het moc nay
+    # KHONG con kha nang khoi phuc (xem NotePurgeServiceImpl, SEC-12)
+    purge-after-days: ${NOTES_PURGE_AFTER_DAYS:30}
+    # Job chay dinh ky - mac dinh 24 gio/lan la du (khong can chay lien tuc
+    # nhu job dong bo Drive), giam xuong (VD 60000 = 1 phut) khi muon test thu cong
+    purge-job-fixed-delay-ms: ${NOTES_PURGE_JOB_FIXED_DELAY_MS:86400000}
+
+  rate-limit:
+    # Gioi han cho PATCH /api/notes/{id}/content (auto-save) - THEO USER, xem
+    # RateLimitInterceptor.java (SEC-13). Thuat toan token bucket:
+    #  - autosave-capacity: so request "bung" toi da cho phep NGAY LAP TUC (burst)
+    #  - autosave-refill-interval-ms: sau moi khoang thoi gian nay, cong them 1 token
+    # Vi du mac dinh (5 token, refill 500ms): FE debounce 1.3s/lan la QUA AN TOAN
+    # so voi gioi han nay (khong bao gio bi chan trong dieu kien binh thuong),
+    # chi chan duoc client loi/spam qua nhanh (nhieu request/giay lien tuc).
+    autosave-capacity: ${RATE_LIMIT_AUTOSAVE_CAPACITY:5}
+    autosave-refill-interval-ms: ${RATE_LIMIT_AUTOSAVE_REFILL_MS:500}
+
+  drive:
+    app-folder-name: "NotedApp"
+    sync-retry-max-attempts: 5
+    sync-job-fixed-delay-ms: 30000   # job nen chay moi 30s
+
+    # URL cua CHINH BACKEND nay, phai KHOP CHINH XAC voi URI da khai bao trong
+    # Google Cloud Console (OAuth Client -> Authorized redirect URIs), neu
+    # khong Google se tu choi voi loi "redirect_uri_mismatch".
+    redirect-uri: ${DRIVE_REDIRECT_URI:http://localhost:8085/api/drive/callback}
+
+    # URL cua FRONTEND, noi backend redirect trinh duyet VE sau khi hoan tat
+    # (thanh cong hoac that bai) luong ket noi Drive. Neu dung nginx reverse
+    # proxy (port 85, xem repo noteText), day chinh la origin cua port do.
+    frontend-callback-url: ${DRIVE_FRONTEND_CALLBACK_URL:http://localhost:5175/drive/callback}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # CHI expose health, tuyet doi khong bat "*" (se lo env, beans, heapdump...)
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.noted.backend: DEBUG
+    org.springframework.security: INFO
