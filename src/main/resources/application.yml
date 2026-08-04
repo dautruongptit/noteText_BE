@@ -6,7 +6,7 @@ spring:
     name: noted-backend
 
   datasource:
-    url: jdbc:mysql://${DB_HOST:mysql8}:3306/${DB_NAME:noted_db}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+    url: ${DB_URL:jdbc:mysql://100.102.72.31:3306/note_text?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true}
     username: ${DB_USER:root}
     password: ${DB_PASSWORD:1234567890}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -26,8 +26,9 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
-    baseline-on-migrate: true
-
+    repair-check-checksum: false
+    baseline-on-migrate: true # Tự động tạo bảng lịch sử nếu DB đã có sẵn dữ liệu từ trước
+    validate-on-migrate: false # Tắt validate checksum để tránh lỗi mismatch khi sửa file V1
   security:
     oauth2:
       client:

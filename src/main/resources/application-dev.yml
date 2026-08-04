@@ -10,6 +10,13 @@ spring:
   jpa:
     show-sql: true   # in ra console cau SQL that su Hibernate chay - tien debug query luc dev
     repair-check-checksum: false
+    flyway:
+      enabled: true
+      # Tự động thực hiện repair để cập nhật lại checksum nếu có sự thay đổi
+      repair-check-checksum: false
+      repair-check-sum-on-save: true
+      baseline-on-migrate: true
+      clean-disabled: false
 logging:
   level:
     com.noted.backend: DEBUG

@@ -28,6 +28,8 @@ import java.io.ByteArrayOutputStream;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Dong bo file len Google Drive, chay hoan toan NEN (async / scheduled job),
@@ -44,6 +46,23 @@ import java.util.List;
  *
  * Neu Drive loi (het quota, mat mang, token het han...), note van an toan tren
  * disk cua Ubuntu server; co che (2) se tu dong retry o lan chay ke tiep.
+ *
+ * FIX QUAN TRONG (phat hien tu bao loi thuc te - file bi double tren Drive):
+ * co (1) va (2) o tren co the CUNG goi syncNote() cho CUNG 1 note GAN NHU DONG
+ * THOI (VD: vua tao hang loat note qua migrateLocalNotesToServer() luc dang
+ * nhap - moi note phat 1 event (1) - RIENG nguoi dung lai bam "Dong bo ngay"
+ * hoac job dinh ky (2) chay trung luc do, quet thay CUNG cac note nay van con
+ * PENDING_DRIVE vi luot sync (1) chua kip luu driveFileId vao DB). Ca 2 lenh
+ * syncNote() chay SONG SONG cho CUNG note se CUNG thay driveFileId == null ->
+ * CA HAI DEU goi create() -> tao 2 file tren Drive cho 1 note (double file).
+ * Sua bang 2 lop:
+ *  a) Khoa trong bo nho (syncingNoteIds) - chan tuyet doi 2 lenh syncNote()
+ *     chay dong thoi cho CUNG 1 noteId.
+ *  b) Truoc khi create() (driveFileId == null), TIM truoc tren Drive xem da
+ *     co file TRUNG TEN trong app folder chua - neu co, "nhan lai" file do
+ *     (luu ID vao DB, dung nhanh update() thay vi create()) thay vi tao moi -
+ *     day chinh la co che "ghi de neu ten da ton tai" nguoi dung mong doi,
+ *     dong thoi tu phuc hoi duoc neu truoc do lo tao trung do bug/race condition.
  */
 @Service
 @RequiredArgsConstructor
@@ -54,6 +73,13 @@ public class DriveSyncServiceImpl implements DriveSyncService {
     private final UserRepository userRepository;
     private final FileStorageService fileStorageService;
     private final CryptoUtil cryptoUtil;
+
+    // Khoa trong bo nho (SEC-19-fix): chan 2 lenh syncNote() chay dong thoi
+    // cho CUNG 1 noteId (xem giai thich chi tiet o class-level javadoc).
+    // Chi hoat dong dung tren 1 INSTANCE backend duy nhat (dung quy mo hien
+    // tai cua du an) - neu sau nay scale nhieu instance, can chuyen sang khoa
+    // phan tan (VD Redis SETNX), giong pattern da ghi chu o TokenBucket.java.
+    private final Set<Long> syncingNoteIds = ConcurrentHashMap.newKeySet();
 
     @Value("${app.drive.app-folder-name}")
     private String appFolderName;
@@ -105,6 +131,25 @@ public class DriveSyncServiceImpl implements DriveSyncService {
     @Async
     @Transactional
     public void syncNote(Long noteId) {
+        // Lop bao ve (a): neu note nay DANG duoc 1 lenh syncNote() khac xu ly
+        // (con dang goi Drive API, chua xong), BO QUA lenh nay ngay lap tuc -
+        // KHONG cho chay song song. Lenh dang chay se tu cap nhat trang thai
+        // dung (SYNCED/DRIVE_FAILED); neu lenh bi bo qua nay THAT SU can thiet
+        // (VD noi dung vua doi tiep sau do), job dinh ky (2) se tu bat lai o
+        // lan quet ke tiep vi note van con PENDING_DRIVE.
+        if (!syncingNoteIds.add(noteId)) {
+            log.debug("Note {} dang duoc dong bo boi 1 luot goi khac, bo qua lenh trung lap nay", noteId);
+            return;
+        }
+
+        try {
+            syncNoteInternal(noteId);
+        } finally {
+            syncingNoteIds.remove(noteId);
+        }
+    }
+
+    private void syncNoteInternal(Long noteId) {
         Note note = noteRepository.findById(noteId).orElse(null);
         if (note == null || note.isDeleted()) return;
 
@@ -122,11 +167,29 @@ public class DriveSyncServiceImpl implements DriveSyncService {
                     content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
             if (note.getDriveFileId() == null) {
-                File meta = new File();
-                meta.setName(note.getDisplayName());
-                meta.setParents(Collections.singletonList(folderId));
-                File created = drive.files().create(meta, fileContent).setFields("id").execute();
-                note.setDriveFileId(created.getId());
+                // Lop bao ve (b): TRUOC KHI tao file moi, tim xem trong app
+                // folder da co san file TRUNG TEN chua (VD do 1 lan sync
+                // truoc do da tao nhung DB chua kip luu ID, hoac do nguoi
+                // dung tu tao file cung ten thu cong tren Drive). Neu co,
+                // "nhan lai" file do (ghi de noi dung + luu ID vao DB) thay
+                // vi tao them 1 ban moi - day chinh la hanh vi "ghi de neu
+                // ten da ton tai" ma nguoi dung mong doi.
+                String existingFileId = findExistingFileByName(drive, folderId, note.getDisplayName());
+
+                if (existingFileId != null) {
+                    File meta = new File();
+                    meta.setName(note.getDisplayName());
+                    drive.files().update(existingFileId, meta, fileContent).execute();
+                    note.setDriveFileId(existingFileId);
+                    log.info("Note {} tim thay file trung ten co san tren Drive (id={}), da ghi de thay vi tao moi",
+                            noteId, existingFileId);
+                } else {
+                    File meta = new File();
+                    meta.setName(note.getDisplayName());
+                    meta.setParents(Collections.singletonList(folderId));
+                    File created = drive.files().create(meta, fileContent).setFields("id").execute();
+                    note.setDriveFileId(created.getId());
+                }
             } else {
                 // Cap nhat noi dung; neu ten da doi thi cap nhat luon metadata ten
                 File meta = new File();
@@ -149,6 +212,26 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         }
 
         noteRepository.save(note);
+    }
+
+    /**
+     * Tim file THEO TEN trong app folder tren Drive - CHI dung lam luoi an
+     * toan truoc khi tao file moi (xem syncNoteInternal), KHONG dung cho muc
+     * dich nao khac. Tra ve ID file dau tien khop ten (neu co nhieu hon 1 do
+     * da tung bi double tu truoc, chi lay 1 cai - cac ban trung con lai
+     * nguoi dung can tu xoa thu cong tren Drive, he thong KHONG tu dong xoa
+     * de tranh rui ro xoa nham du lieu).
+     */
+    private String findExistingFileByName(Drive drive, String folderId, String displayName) throws Exception {
+        String escapedName = displayName.replace("'", "\\'");
+        String query = String.format(
+                "name='%s' and '%s' in parents and trashed=false",
+                escapedName, folderId);
+        FileList result = drive.files().list().setQ(query).setSpaces("drive").setPageSize(1).execute();
+        if (result.getFiles() != null && !result.getFiles().isEmpty()) {
+            return result.getFiles().get(0).getId();
+        }
+        return null;
     }
 
     @Override
