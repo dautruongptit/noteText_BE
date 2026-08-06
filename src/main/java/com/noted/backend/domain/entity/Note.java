@@ -65,6 +65,20 @@ public class Note {
     @Column(name = "drive_sync_error", length = 512)
     private String driveSyncError;
 
+    /**
+     * Co thay doi CHUA duoc day len Drive hay khong. Tach rieng khoi
+     * "syncState" (von la enum mo ta trang thai HIEN THI cho UI: SYNCED/
+     * PENDING_DRIVE/DRIVE_FAILED/CONFLICT) - "dirty" la co CHUAN dung cho
+     * batch job debounce sync quyet dinh note nao can day len Drive, dua
+     * tren "updatedAt" (thoi diem sua GAN NHAT) de tinh "da yen tinh du 30s
+     * chua". Bat len true moi khi noi dung/ten thay doi, tat ve false SAU
+     * KHI da sync THANH CONG len Drive (khong tat neu sync that bai - de
+     * lan sau con retry).
+     */
+    @Column(name = "is_dirty", nullable = false)
+    @Builder.Default
+    private boolean dirty = true;
+
     @Column(name = "is_deleted", nullable = false)
     @Builder.Default
     private boolean deleted = false;
@@ -89,4 +103,5 @@ public class Note {
     void preUpdate() {
         this.updatedAt = LocalDateTime.now();
     }
+
 }

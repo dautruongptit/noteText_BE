@@ -44,35 +44,6 @@ public class NotePurgeServiceImpl implements NotePurgeService {
     @Transactional
     public void purgeExpiredNotes() {
         LocalDateTime threshold = LocalDateTime.now().minusDays(purgeAfterDays);
-        List<Note> expired = noteRepository.findTop100ByDeletedTrueAndDeletedAtBefore(threshold);
 
-        if (expired.isEmpty()) {
-            return;
-        }
-
-        log.info("Purge job: tim thay {} note da qua han {} ngay giu lai, bat dau xoa vinh vien",
-                expired.size(), purgeAfterDays);
-
-        for (Note note : expired) {
-            try {
-                // Thu tu xoa: Drive (best-effort, KHONG throw - xem SEC-15) ->
-                // file vat ly tren disk -> record DB.
-                //
-                // Xoa file vat ly TRUOC record DB (khong lam nguoc lai): neu
-                // buoc xoa file that bai giua chung ma DB da xoa truoc, file
-                // tren disk se "mo coi" vinh vien - khong con record nao tro
-                // toi no nua de biet ma don dep sau nay. Thu tu da chon dam
-                // bao neu co loi xay ra, van con "dau moi" (record DB) de
-                // retry lan sau.
-                driveSyncService.deleteFromDrive(note.getId());
-                fileStorageService.delete(note.getFilePath());
-                noteRepository.delete(note);
-            } catch (Exception e) {
-                // KHONG throw tiep - 1 note loi (VD loi disk tam thoi) khong
-                // duoc lam hong ca batch, cac note con lai van tiep tuc xu ly.
-                // Note loi se duoc thu lai o lan chay ke tiep (van con trong DB).
-                log.warn("Purge that bai cho note id={}, se thu lai o lan chay sau", note.getId(), e);
-            }
-        }
     }
 }

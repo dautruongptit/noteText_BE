@@ -44,6 +44,16 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     }
 
     @Override
+    public void write(String filePath, String content) {
+
+    }
+
+    @Override
+    public String store(String content, String fileName) {
+        return null;
+    }
+
+    @Override
     public long writeAtomic(String relativePath, String content) {
         Path target = resolveAndValidate(relativePath);
         Path tmp = target.resolveSibling(target.getFileName() + "." + System.nanoTime() + ".tmp");

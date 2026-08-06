@@ -23,4 +23,11 @@ public interface FileStorageService {
 
     /** Sinh duong dan tuong doi chuan cho 1 note moi, dua tren userId + uuid */
     String buildRelativePath(Long userId, String noteUuid);
+    // Đã có sẵn của bạn
+    void write(String filePath, String content);
+
+    /**
+     * Lưu nội dung file mới vào đĩa cục bộ và trả về đường dẫn tương đối (filePath).
+     */
+    String store(String content, String fileName);
 }

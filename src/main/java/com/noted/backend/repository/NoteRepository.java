@@ -31,4 +31,16 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
     // (deletedAt truoc "threshold"). Gioi han Top100/lan chay, giong pattern da dung
     // o job dong bo Drive - tranh 1 lan quet load qua nhieu row cung luc.
     List<Note> findTop100ByDeletedTrueAndDeletedAtBefore(LocalDateTime threshold);
+
+    // ---------- Debounce Sync (dirty flag) ----------
+
+    // Job dinh ky quet CHU DONG: note dang dirty VA da "yen tinh" (khong sua
+    // gi them) du lau (updatedAt truoc "idleBefore") - day chinh la buoc
+    // "sau 30 giay khong co thay doi" trong luong Debounce Sync.
+    List<Note> findTop50ByDirtyTrueAndDeletedFalseAndUpdatedAtBefore(LocalDateTime idleBefore);
+
+    // Flush THU CONG (bam nut "Dong bo ngay" HOAC luc dong tab/roi trang) -
+    // lay TOAN BO note dirty cua 1 user, BO QUA nguong 30s (nguoi dung/trinh
+    // duyet da chu dong yeu cau dong bo NGAY, khong can doi them).
+    List<Note> findByDirtyTrueAndDeletedFalseAndUserId(Long userId);
 }

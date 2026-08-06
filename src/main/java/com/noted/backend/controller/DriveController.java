@@ -145,8 +145,12 @@ public class DriveController {
     @PostMapping("/sync-all")
     public Map<String, String> syncAll(@AuthenticationPrincipal Long userId) {
         driveSyncService.ensureAppFolder(userId);
-        // Trigger job quet lai ngay (thay vi cho fixedDelay tiep theo)
-        driveSyncService.runPendingSyncBatch();
+        // "Flush" thu cong - day NGAY toan bo note dirty cua RIENG user nay,
+        // bo qua nguong debounce 30s (xem DriveSyncServiceImpl, "Debounce Sync").
+        // Dung chung cho ca nut "Dong bo ngay" TREN UI lan luc trinh duyet
+        // flush khi dong tab (frontend goi CUNG endpoint nay qua
+        // fetch(..., {keepalive:true})).
+        driveSyncService.flushDirtyNotes(userId);
         return Map.of("message", "sync_triggered");
     }
 

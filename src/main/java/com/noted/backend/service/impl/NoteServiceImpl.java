@@ -8,7 +8,7 @@ import com.noted.backend.dto.request.UpdateContentRequest;
 import com.noted.backend.dto.response.BulkDeleteResponse;
 import com.noted.backend.dto.response.NoteDetailResponse;
 import com.noted.backend.dto.response.NoteSummaryResponse;
-import com.noted.backend.event.NoteContentChangedEvent;
+import com.noted.backend.event.NoteDeletedEvent;
 import com.noted.backend.exception.DuplicateFileNameException;
 import com.noted.backend.exception.NoteNotFoundException;
 import com.noted.backend.repository.NoteRepository;
@@ -25,6 +25,16 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * QUAN TRONG - luong dong bo Drive DA DOI (xem DriveSyncServiceImpl, "Debounce
+ * Sync"): truoc day moi lan sua note deu publish NoteContentChangedEvent de
+ * kich hoat sync GAN NHU NGAY LAP TUC. Gio day CHI danh dau note.dirty=true -
+ * VIEC DAY LEN DRIVE duoc doi thanh 3 kenh rieng biet:
+ *   1. Job debounce dinh ky (note "yen tinh" 30s khong sua them)
+ *   2. Nguoi dung bam "Dong bo ngay" (POST /api/drive/sync-all)
+ *   3. Trinh duyet flush luc dong tab/roi trang (cung goi /api/drive/sync-all)
+ * Xem chi tiet trong DriveSyncServiceImpl.
+ */
 @Service
 @RequiredArgsConstructor
 public class NoteServiceImpl implements NoteService {
@@ -64,6 +74,7 @@ public class NoteServiceImpl implements NoteService {
                 .userId(userId)
                 .displayName(displayName)
                 .syncState(SyncState.PENDING_DRIVE)
+                .dirty(true) // note moi -> chua tung len Drive, can duoc debounce-sync
                 .build();
         note.setFilePath(fileStorageService.buildRelativePath(userId, note.getUuid()));
 
@@ -80,10 +91,6 @@ public class NoteServiceImpl implements NoteService {
         writeContentAndUpdateMetadata(note, content);
         note = noteRepository.save(note);
 
-        // Kich hoat sync Drive "ngay khi co the" thay vi cho job dinh ky 30s -
-        // xem NoteSyncEventListener de biet ly do dung event AFTER_COMMIT thay vi goi truc tiep
-        eventPublisher.publishEvent(new NoteContentChangedEvent(note.getId()));
-
         return NoteDetailResponse.of(note, content);
     }
 
@@ -94,12 +101,9 @@ public class NoteServiceImpl implements NoteService {
 
         writeContentAndUpdateMetadata(note, request.content());
         note.setSyncState(SyncState.PENDING_DRIVE); // moi thay doi -> can day len Drive lai
+        note.setDirty(true); // "Auto Save vao DB" xong -> danh dau dirty, cho Debounce Sync xu ly rieng
         note.setDriveSyncAttempts(0);
         note = noteRepository.save(note);
-
-        // Trigger chinh cua "sync theo su kien": moi lan luu (auto-save hoac Ctrl+S)
-        // deu kich hoat sync gan nhu ngay lap tuc, khong doi job dinh ky
-        eventPublisher.publishEvent(new NoteContentChangedEvent(note.getId()));
 
         return NoteDetailResponse.of(note, request.content());
     }
@@ -117,6 +121,9 @@ public class NoteServiceImpl implements NoteService {
 
         // Chi doi ten hien thi trong DB, KHONG dung den file vat ly (ten vat ly la UUID co dinh)
         note.setDisplayName(newName);
+        // Ten hien thi cung la ten file tren Drive (xem GoogleDriveService.updateFile) -
+        // doi ten cung can day len Drive lai, danh dau dirty tuong tu doi content.
+        note.setDirty(true);
         try {
             note = noteRepository.saveAndFlush(note);
         } catch (DataIntegrityViolationException e) {
@@ -139,6 +146,7 @@ public class NoteServiceImpl implements NoteService {
                 .userId(userId)
                 .displayName(candidateName)
                 .syncState(SyncState.PENDING_DRIVE)
+                .dirty(true) // ban sao la 1 note MOI tren Drive (driveFileId rieng, khong dung chung voi ban goc)
                 .build();
         copy.setFilePath(fileStorageService.buildRelativePath(userId, copy.getUuid()));
 
@@ -151,8 +159,6 @@ public class NoteServiceImpl implements NoteService {
         copy.setContentSizeBytes((long) content.getBytes(StandardCharsets.UTF_8).length);
         copy = noteRepository.save(copy);
 
-        eventPublisher.publishEvent(new NoteContentChangedEvent(copy.getId()));
-
         return NoteDetailResponse.of(copy, content);
     }
 
@@ -163,17 +169,18 @@ public class NoteServiceImpl implements NoteService {
         note.setDeleted(true);
         note.setDeletedAt(LocalDateTime.now());
         noteRepository.save(note);
-        // File vat ly + ban tren Drive co the xoa qua job nen (giu lai 1 thoi gian de phong undo)
+        // File vat ly + ban tren Drive: file vat ly don qua purge job (30 ngay,
+        // SEC-12), rieng ban tren Drive duoc xoa NGAY LAP TUC qua event nay
+        // (xem NoteDeletedEvent/NoteSyncEventListener) - khong doi den purge.
+        eventPublisher.publishEvent(new NoteDeletedEvent(note.getId()));
     }
 
     /**
      * Xoa nhieu note cung luc - tinh nang "chon nhieu de xoa".
      *
      * Co tinh KHONG lam tuong tu cho "chon nhieu de sync": dong bo Drive la co che
-     * tu dong/toan bo (moi note deu duoc sync qua NoteContentChangedEvent + job dinh ky),
-     * bat nguoi dung chon file nao de sync se tao rui ro quen sync -> mat du lieu.
-     * Xem lai phan phan tich nghiep vu da thong nhat: sync khong nen la thao tac
-     * nguoi dung phai chu y thuc hien thu cong tren tung file.
+     * tu dong/toan bo (moi note dirty deu duoc Debounce Sync xu ly), bat nguoi
+     * dung chon file nao de sync se tao rui ro quen sync -> mat du lieu.
      */
     @Override
     @Transactional
@@ -188,6 +195,9 @@ public class NoteServiceImpl implements NoteService {
         noteRepository.saveAll(owned);
 
         List<Long> deletedIds = owned.stream().map(Note::getId).toList();
+        // Xoa Drive NGAY LAP TUC cho TUNG note trong danh sach (khong doi purge job)
+        deletedIds.forEach(id -> eventPublisher.publishEvent(new NoteDeletedEvent(id)));
+
         return new BulkDeleteResponse(noteIds.size(), deletedIds.size(), deletedIds);
     }
 

@@ -1,7 +1,6 @@
 package com.noted.backend.service.impl;
 
-import com.noted.backend.domain.entity.Note;
-import com.noted.backend.domain.enums.SyncState;
+import com.noted.backend.enums.SyncState;
 import com.noted.backend.dto.request.CreateNoteRequest;
 import com.noted.backend.dto.request.RenameNoteRequest;
 import com.noted.backend.dto.response.BulkDeleteResponse;

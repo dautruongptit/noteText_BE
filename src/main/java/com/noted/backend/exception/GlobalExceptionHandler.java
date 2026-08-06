@@ -33,6 +33,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_GATEWAY, "DRIVE_TOKEN_EXCHANGE_FAILED", ex.getMessage());
     }
 
+    @ExceptionHandler(GoogleDriveOperationException.class)
+    public ResponseEntity<?> handleGoogleDriveOperation(GoogleDriveOperationException ex) {
+        return build(HttpStatus.BAD_GATEWAY, "GOOGLE_DRIVE_OPERATION_FAILED", ex.getMessage());
+    }
+
     @ExceptionHandler(RateLimitExceededException.class)
     public ResponseEntity<?> handleRateLimit(RateLimitExceededException ex) {
         return build(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", ex.getMessage());
