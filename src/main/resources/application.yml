@@ -58,7 +58,6 @@ spring:
 
 app:
   frontend-redirect-url: ${FRONTEND_REDIRECT_URL:http://localhost:5175/oauth/callback}
-
   crypto:
     # Base64 cua 32 byte (AES-256). Sinh bang: openssl rand -base64 32
     secret-key: ${CRYPTO_SECRET_KEY}
@@ -104,7 +103,7 @@ app:
     app-folder-name: "NotedApp"
     sync-retry-max-attempts: 5
     sync-job-fixed-delay-ms: 30000   # job nen chay moi 30s
-
+    sync-debounce-idle-ms: 5000
     # URL cua CHINH BACKEND nay, phai KHOP CHINH XAC voi URI da khai bao trong
     # Google Cloud Console (OAuth Client -> Authorized redirect URIs), neu
     # khong Google se tu choi voi loi "redirect_uri_mismatch".
