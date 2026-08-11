@@ -1,11 +1,16 @@
 # Noted Backend — Kiến trúc & Hướng dẫn triển khai
 
 Backend cho ứng dụng ghi chú **Noted**, xây dựng theo Clean Architecture, phục vụ:
-- Đăng nhập bằng Google (OAuth2 + JWT nội bộ)
+- Đăng nhập bằng Google (OAuth2 + JWT nội bộ + refresh token rotation)
 - Lưu metadata note trong **MySQL**, nội dung file thật trên **filesystem của Ubuntu server**
-- Đồng bộ nền (background job) lên **Google Drive**
-- Chặn trùng tên file ở cả tầng service lẫn DB constraint
+- Đồng bộ nền (background job, "Debounce Sync") lên **Google Drive**
+- Chặn trùng tên file ở cả tầng service lẫn DB constraint (3 chỗ: create/rename/duplicate)
 - Hỗ trợ **offline-first**: client dùng IndexedDB làm buffer, đồng bộ lại khi server online trở lại
+
+> Đây là nửa **backend** của dự án Noted. Nửa **frontend** (React/Vite/TS, local-first) nằm ở
+> repo song song [`noteText_web`](../noteText_web/README.md) — 2 repo tách biệt nhưng là
+> **một sản phẩm duy nhất**; xem README bên đó để biết cách chạy full-stack cùng nhau
+> (port, biến môi trường `VITE_API_BASE_URL`/`ALLOWED_ORIGINS` phải khớp nhau giữa 2 phía).
 
 ## 1. Kiến trúc phân lớp (Clean Architecture)
 
@@ -14,17 +19,19 @@ controller/     ← REST API, chỉ nhận request/trả response, KHÔNG chứa
 service/        ← Business logic (interface + impl), transaction boundary
 repository/     ← Spring Data JPA, chỉ thao tác DB
 domain/entity/  ← JPA entity, model nghiệp vụ thuần
+domain/enums/   ← SyncState và các enum nghiệp vụ khác
 dto/            ← Request/Response, tách biệt hoàn toàn khỏi entity (không leak entity ra API)
-security/       ← JWT provider, filter, OAuth2 success handler
+security/       ← JWT provider, filter, OAuth2 success handler, RateLimitInterceptor
+event/          ← ApplicationEvent + @TransactionalEventListener cho side-effect bất đồng bộ
 exception/      ← Custom exception + GlobalExceptionHandler (@RestControllerAdvice)
-util/           ← HashUtil (SHA-256), CryptoUtil (AES-256-GCM cho refresh token)
+util/           ← HashUtil (SHA-256/MD5), CryptoUtil (AES-256-GCM cho refresh token), TokenBucket
 config/         ← SecurityConfig, CORS
 ```
 
 Nguyên tắc dependency: `controller → service → repository`, không có chiều ngược lại;
 `entity` không bao giờ được serialize thẳng ra JSON (luôn qua DTO).
 
-## 2. Vì sao DB + Filesystem, không chỉ Drive (nhắc lại quyết định kiến trúc)
+## 2. Vì sao DB + Filesystem, không chỉ Drive
 
 | | MySQL | Filesystem Ubuntu | Google Drive |
 |---|---|---|---|
@@ -33,12 +40,17 @@ Nguyên tắc dependency: `controller → service → repository`, không có ch
 
 → Người dùng gõ chữ không bao giờ bị chặn bởi tốc độ/rate-limit của Google Drive API.
 
-## 3. Chặn trùng tên file — 2 lớp bảo vệ
+## 3. Chặn trùng tên file — 2 lớp bảo vệ, áp dụng ở cả 3 thao tác ghi tên
 
 1. **Tầng service** (`NoteServiceImpl`): `existsByUserIdAndDisplayNameAndDeletedFalse` — trả lỗi rõ ràng, UX tốt.
-2. **Tầng DB** (`UNIQUE(user_id, display_name)` trong migration `V1__init_schema.sql`) — chặn race condition khi 2 request tạo file trùng tên gần như đồng thời (service check không đủ an toàn một mình vì có khoảng hở giữa check và insert).
+2. **Tầng DB** (`UNIQUE(user_id, display_name)` trong migration `V1__init_schema.sql`) — chặn race
+   condition khi 2 request cùng tạo/đổi tên file trùng nhau gần như đồng thời (service check không
+   đủ an toàn một mình vì có khoảng hở giữa check và insert/update).
 
-Khi bắt được `DataIntegrityViolationException` do vi phạm unique constraint, service convert thành `DuplicateFileNameException` → `GlobalExceptionHandler` trả về **409 Conflict**.
+Áp dụng đồng nhất ở cả `createNote()`, `rename()` **và** `duplicate()` — bắt cả
+`DataIntegrityViolationException` (đã được Spring dịch lại) lẫn `org.hibernate.exception.ConstraintViolationException`
+(exception gốc của Hibernate, phòng trường hợp bị lọt ra trước khi Spring kịp dịch), convert thành
+`DuplicateFileNameException` → `GlobalExceptionHandler` trả về **409 Conflict** (`DUPLICATE_FILE_NAME`).
 
 ## 4. Ghi file atomic (chống hỏng file khi server crash giữa chừng)
 
@@ -53,66 +65,103 @@ Tên file vật lý trên disk **luôn là UUID**, không dùng tên hiển th�
 | Giai đoạn | Mục đích | Scope |
 |---|---|---|
 | **Login** (`/oauth2/authorization/google`) | Xác thực danh tính, tạo `User` trong DB, sinh JWT nội bộ | `openid email profile` |
-| **Connect Drive** (`/api/drive/connect`) | Xin quyền `drive.file` + `access_type=offline` để lấy `refresh_token` dùng cho job sync nền | `drive.file` |
+| **Connect Drive** (`GET /api/drive/connect` → `GET /api/drive/callback`) | Xin quyền `drive.file` + `access_type=offline`, đổi `code` lấy `refresh_token` thật qua `GoogleTokenExchangeService`, tạo/tìm app folder ngay để phát hiện lỗi sớm | `drive.file` |
 
 `refresh_token` được mã hóa AES-256-GCM (`CryptoUtil`) trước khi lưu vào cột `users.drive_refresh_token_enc`.
+`state` param của bước connect được ký JWT riêng (`JwtTokenProvider.generateDriveStateToken`) để chống CSRF,
+vì `GET /api/drive/callback` là điều hướng trình duyệt thuần túy (không có header `Authorization`) nên phải
+`permitAll` ở `SecurityConfig`.
 
-## 6. Đồng bộ Drive chạy nền
+## 6. JWT nội bộ + Refresh Token Rotation
 
-- `DriveSyncServiceImpl.syncNote()` — `@Async`, không block request `PATCH /content`.
-- `runPendingSyncBatch()` — `@Scheduled(fixedDelay = 30000)`, quét tối đa 50 note đang `PENDING_DRIVE`/chưa vượt `sync_attempts` để retry.
-- Trạng thái đồng bộ (`sync_state`) hiển thị lên UI: `SYNCED` / `PENDING_DRIVE` / `DRIVE_FAILED` / `CONFLICT`.
+- Access token JWT: sống ngắn (1 giờ).
+- Refresh token: chuỗi ngẫu nhiên lưu DB (bảng `refresh_tokens`), **rotate** mỗi lần gọi
+  `POST /api/auth/refresh` thành công (token cũ bị thu hồi, cấp token mới) — `RefreshTokenServiceImpl`.
+- `POST /api/auth/logout` — thu hồi refresh token của phiên hiện tại.
+- `POST /api/auth/logout-all` — thu hồi toàn bộ refresh token của user (mọi thiết bị).
+- `RateLimitInterceptor` (token bucket theo `userId`, không theo IP) chặn spam
+  `PATCH /api/notes/{id}/content` — bảo vệ server dù frontend có debounce sẵn, không được chỉ dựa vào FE.
 
-## 7. Offline-first reconciliation (`/api/sync/batch`)
+## 7. Đồng bộ Drive — kiến trúc "Debounce Sync" (đã thay thế sync theo sự kiện tức thời)
 
-Khi client mất kết nối tới Ubuntu server, dữ liệu vẫn được giữ trong **IndexedDB** ở trình duyệt.
-Khi có mạng lại, client gọi 1 lần `POST /api/sync/batch` gửi toàn bộ note đang "pending_server".
-Server so sánh `updatedAt` để phát hiện conflict (chiến lược mặc định: bản mới hơn thắng; có thể nâng cấp trả về cả 2 bản để người dùng tự chọn).
+**Lưu ý quan trọng nếu đọc code cũ hơn**: kiến trúc này đã đổi. Trước đây mỗi lần sửa note đều
+publish `NoteContentChangedEvent` để kích hoạt sync gần như ngay lập tức. File `NoteContentChangedEvent.java`
+vẫn còn tồn tại trong repo nhưng **không còn được publish/lắng nghe ở đâu nữa** — có thể coi là dead code
+chờ dọn dẹp. Cơ chế hiện tại (`DriveSyncServiceImpl`):
+
+Mỗi lần nội dung/tên note đổi, note chỉ được đánh dấu `dirty=true` + `syncState=PENDING_DRIVE`. Việc
+**thật sự** đẩy lên Drive đi theo 3 kênh:
+
+1. **Debounce định kỳ** (`runDebouncedSyncBatch`, `@Scheduled`): tìm note `dirty=true` đã "yên tĩnh"
+   (không sửa thêm) qua một ngưỡng thời gian (mặc định 30s, `app.drive.sync-debounce-idle-ms`), dựa
+   trên cột `updated_at` có sẵn.
+2. **Flush thủ công** (`flushDirtyNotes`, qua `POST /api/drive/sync-all`): người dùng bấm "Đồng bộ ngay" — đẩy TOÀN BỘ note dirty của riêng user đó, bỏ qua ngưỡng 30s.
+3. **Flush lúc đóng tab**: frontend gọi CÙNG endpoint `POST /api/drive/sync-all` qua `fetch(..., {keepalive:true})` trong sự kiện `beforeunload`/`pagehide`.
+
+Ngoại lệ duy nhất còn xử lý **ngay lập tức** (không debounce): xóa note → `NoteDeletedEvent` +
+`NoteSyncEventListener` (`@TransactionalEventListener(phase = AFTER_COMMIT)`) xóa file tương ứng trên
+Drive ngay, tránh file "mồ côi" tồn tại vô ích. Vì sao `AFTER_COMMIT`: các thao tác Drive là `@Async`
+(chạy thread riêng gần như ngay lập tức) — nếu gọi trước khi transaction gốc commit, thread nền có thể
+đọc DB qua connection khác và không thấy thay đổi vừa lưu.
+
+**Tối ưu `md5Checksum`**: trước khi `updateFile()` cho note đã có `driveFileId`, so sánh MD5 nội dung
+local với `md5Checksum` Google đã tính sẵn — khớp thì bỏ qua update (note bị sửa rồi sửa lại về y hệt
+cũ trước khi kịp debounce).
+
+**Nguyên tắc nghiệp vụ chốt (SEC-15)**: Google Drive KHÔNG bắt buộc tên file duy nhất trong 1 folder —
+hệ thống này **cho phép trùng tên trên Drive**. Định danh duy nhất cần quan tâm CHỈ LÀ `driveFileId`
+(do Google cấp phát) — `uploadFile()` luôn tạo file mới (không tìm theo tên), `updateFile()` luôn định
+danh bằng `fileId` có sẵn (không bao giờ tìm lại theo tên).
 
 ## 7b. Chọn nhiều để xoá — CÓ; Chọn nhiều để sync — KHÔNG (quyết định nghiệp vụ)
 
-- **Bulk delete** (`POST /api/notes/bulk-delete`): xử lý trong 1 transaction duy nhất, chỉ xoá note thực sự thuộc sở hữu `userId` (id lạ bị loại âm thầm, không làm hỏng cả thao tác). Trả về `BulkDeleteResponse` gồm `requestedCount`/`deletedCount` để FE báo chính xác cho người dùng.
-- **Không có** "chọn nhiều để sync": đồng bộ Drive là cơ chế **tự động cho mọi note**, không phải thao tác người dùng phải chủ động chọn. Lý do: bắt người dùng chọn file để sync tạo rủi ro *quên chọn* → mất dữ liệu khi server không tới được — đi ngược mục tiêu ban đầu của tính năng Drive sync (an toàn dữ liệu).
+- **Bulk delete** (`POST /api/notes/bulk-delete`): xử lý trong 1 transaction duy nhất, chỉ xoá note
+  thực sự thuộc sở hữu `userId` (id lạ bị loại âm thầm, không làm hỏng cả thao tác). Trả về
+  `BulkDeleteResponse` gồm `requestedCount`/`deletedCount` để FE báo chính xác cho người dùng.
+- **Không có** "chọn nhiều để sync": đồng bộ Drive là cơ chế tự động cho mọi note, không phải thao
+  tác người dùng phải chủ động chọn — tránh rủi ro *quên chọn* → mất dữ liệu.
 
-## 7c. Sync theo sự kiện (event-based), không chỉ dựa vào job định kỳ
+## 8. Offline-first reconciliation (`/api/sync/batch`)
 
-`NoteContentChangedEvent` + `NoteSyncEventListener` (`@TransactionalEventListener(phase = AFTER_COMMIT)`):
+Khi client mất kết nối tới server, dữ liệu vẫn giữ trong **IndexedDB** ở trình duyệt (Local Mode).
+Khi có mạng lại (hoặc sau khi đăng nhập lần đầu, xem `migrateLocalNotesToServer` ở frontend), client
+gọi 1 lần `POST /api/sync/batch` gửi toàn bộ note đang chờ. Server so sánh `localUpdatedAtEpochMs`
+từng item để phát hiện conflict, không tự ý ghi đè nếu bản trên server mới hơn.
 
-- Mỗi lần `createNote` / `updateContent` / `duplicate` **commit thành công**, event được phát ra → `DriveSyncService.syncNote()` được gọi gần như ngay lập tức, không cần đợi tới lần quét định kỳ tiếp theo.
-- **Vì sao dùng `AFTER_COMMIT` thay vì gọi thẳng `syncNote()` trong transaction:** `syncNote()` là `@Async`, chạy trên thread riêng gần như ngay khi được gọi. Nếu gọi trước khi transaction gốc commit, thread nền có thể đọc DB qua 1 connection khác và **không thấy** note vừa tạo (do transaction gốc chưa commit) → lỗi "note not found" ngẫu nhiên, khó debug. `AFTER_COMMIT` đảm bảo listener chỉ chạy sau khi dữ liệu đã chắc chắn có trong DB.
-- Job định kỳ `runPendingSyncBatch()` (`@Scheduled` mỗi 30s) **vẫn được giữ lại** làm lưới an toàn dự phòng, bắt các note bị lỡ trigger sự kiện (VD server restart đúng lúc, lỗi mạng tạm thời ở lần sync đầu).
-
-## 8. Danh sách API Endpoints
+## 9. Danh sách API Endpoints (đầy đủ, đối chiếu trực tiếp với controller)
 
 ```
 # Auth
 GET    /api/auth/me
-POST   /api/auth/logout
-GET    /oauth2/authorization/google        (Spring Security tự cung cấp)
+POST   /api/auth/refresh                    (rotate refresh token, đọc cookie httpOnly hoặc body)
+POST   /api/auth/logout                     (thu hồi phiên hiện tại)
+POST   /api/auth/logout-all                 (thu hồi mọi thiết bị)
+GET    /oauth2/authorization/google         (Spring Security tự cung cấp - bước Login)
 
 # Notes
 GET    /api/notes
 GET    /api/notes/{id}
 POST   /api/notes
-PATCH  /api/notes/{id}/content
+PATCH  /api/notes/{id}/content              (rate-limit theo user, xem RateLimitInterceptor)
 PATCH  /api/notes/{id}/rename
 POST   /api/notes/{id}/duplicate
 DELETE /api/notes/{id}
-POST   /api/notes/bulk-delete               (chọn nhiều để xoá - 1 request, 1 transaction)
+POST   /api/notes/bulk-delete
 GET    /api/notes/check-name?name=xxx
 GET    /api/notes/{id}/download
 
 # Drive
 GET    /api/drive/status
-GET    /api/drive/connect
-POST   /api/drive/sync-all
+GET    /api/drive/connect                   (bước Connect Drive - trả authUrl)
+GET    /api/drive/callback                  (Google redirect về đây - permitAll, không cần JWT)
+POST   /api/drive/sync-all                  (flush thủ công + khi đóng tab)
 DELETE /api/drive/disconnect
 
 # Offline sync
 POST   /api/sync/batch
 ```
 
-## 9. Chạy local
+## 10. Chạy local
 
 ```bash
 docker network create dev-network   # nếu chưa có
@@ -124,14 +173,28 @@ openssl rand -base64 32   # dùng để sinh JWT_SECRET và CRYPTO_SECRET_KEY
 docker compose up -d --build
 ```
 
-Backend chạy tại `http://localhost:8085` (đổi từ 8080 mặc định vì đã bị chiếm dụng, sau đó chốt lại là 8085 — không dùng 8084 như bản nháp trước), MySQL tại `localhost:3306` (container `mysql8`, cùng `dev-network` theo quy ước bạn đang dùng). Frontend build ra `dist/` và serve qua nginx ở port `85` (xem repo `noteText`), nginx reverse-proxy `/api/**` sang backend `8085` — nếu bạn không dùng nginx proxy mà cho frontend gọi thẳng, nhớ cập nhật `ALLOWED_ORIGINS` và `FRONTEND_REDIRECT_URL` trong `.env` cho khớp port thật của frontend.
+Backend chạy tại `http://localhost:8085`. MySQL tại `localhost:3306` (container `mysql8`, cùng
+`dev-network`). Frontend build ra `dist/` và serve qua nginx ở port `85` (xem repo
+[`noteText_web`](../noteText_web/README.md)), nginx reverse-proxy `/api/**` sang backend `8085`.
+Nếu chạy frontend bằng `pnpm dev` trực tiếp (không qua nginx), nhớ khớp `ALLOWED_ORIGINS` +
+`FRONTEND_REDIRECT_URL`/`DRIVE_FRONTEND_CALLBACK_URL` trong `.env` với đúng port frontend đang chạy
+(mặc định quy ước 5175).
 
-## 10. Việc còn cần bổ sung trước khi lên production
+## 11. Trạng thái thật hiện tại (đối chiếu code, không phải checklist dự đoán)
 
-- [ ] `GoogleTokenExchangeService`: đổi `code` lấy `access_token` + `refresh_token` ở endpoint `/api/drive/callback` (hiện mới có khung `DriveController.connect()`, chưa có phần exchange code — cần gọi trực tiếp Google token endpoint bằng `RestClient`).
-- [ ] Refresh token cho chính JWT nội bộ (hiện access token 1 giờ, chưa có refresh token riêng — bảng `refresh_tokens` đã có sẵn trong schema, chỉ cần bổ sung `AuthController`).
-- [ ] Rate limiting cho endpoint `PATCH /content` (tránh client auto-save quá dày gây tải DB).
-- [ ] Job dọn note đã soft-delete quá X ngày (purge file vật lý + record DB).
-- [ ] Unit test cho `NoteServiceImpl` (đặc biệt case race condition trùng tên) và `LocalFileStorageServiceImpl` (atomic write).
-#   n o t e T e x t _ B E  
- 
+Đã implement đầy đủ và có test:
+- ✅ `GoogleTokenExchangeService` (đổi `code` → `access_token`/`refresh_token`) — `GoogleTokenExchangeServiceImplTest`
+- ✅ Refresh token + rotation cho JWT nội bộ — `RefreshTokenServiceImplTest`
+- ✅ Rate limiting cho `PATCH /content` — `RateLimitInterceptor` + `TokenBucket`
+- ✅ Chặn trùng tên 2 lớp ở cả create/rename/duplicate — `NoteServiceImplTest`
+- ✅ Ghi file atomic — `LocalFileStorageServiceImplTest`
+
+Còn thiếu / dở dang thật sự (đã đọc trực tiếp code để xác nhận, không suy đoán):
+- ⚠️ **`NotePurgeServiceImpl.purgeExpiredNotes()` là stub RỖNG** — tính `threshold` xong không làm gì
+  cả. Note soft-delete quá `app.notes.purge-after-days` (mặc định 30 ngày) **hiện KHÔNG bao giờ bị
+  xóa vĩnh viễn thật** (cả file vật lý, record DB, lẫn bản trên Drive) dù job `@Scheduled` có chạy đều.
+  Đây là việc cần làm tiếp theo ưu tiên cao nhất.
+- 🧹 `NoteContentChangedEvent`/kiến trúc sync-theo-sự-kiện cũ là dead code, có thể xóa hẳn (xem mục 7).
+- 🧪 Chưa có unit test cho `GoogleDriveServiceImpl`/`DriveSyncServiceImpl` (mock Drive API) và
+  `RateLimitInterceptor`/`TokenBucket`/`JwtTokenProvider`.
+- 🔐 Chưa có SSL/HTTPS, CI/CD, integration test (Testcontainers + MockMvc).

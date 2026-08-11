@@ -16,6 +16,7 @@ import com.noted.backend.service.FileStorageService;
 import com.noted.backend.service.NoteService;
 import com.noted.backend.util.HashUtil;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -82,9 +83,12 @@ public class NoteServiceImpl implements NoteService {
 
         try {
             // 2) UNIQUE constraint o DB la lop bao ve cuoi cung, chong duoc race condition
-            //    (2 request tao file cung ten gan nhu dong thoi)
+            //    (2 request tao file cung ten gan nhu dong thoi). Bat ca
+            //    ConstraintViolationException goc cua Hibernate phong truong
+            //    hop Spring chua kip translate sang DataIntegrityViolationException
+            //    (VD flush xay ra o thoi diem exception chua duoc boc lai).
             note = noteRepository.saveAndFlush(note);
-        } catch (DataIntegrityViolationException e) {
+        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
             throw new DuplicateFileNameException(displayName);
         }
 
@@ -126,7 +130,7 @@ public class NoteServiceImpl implements NoteService {
         note.setDirty(true);
         try {
             note = noteRepository.saveAndFlush(note);
-        } catch (DataIntegrityViolationException e) {
+        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
             throw new DuplicateFileNameException(newName);
         }
 
@@ -150,7 +154,15 @@ public class NoteServiceImpl implements NoteService {
                 .build();
         copy.setFilePath(fileStorageService.buildRelativePath(userId, copy.getUuid()));
 
-        copy = noteRepository.saveAndFlush(copy);
+        try {
+            // resolveAvailableName() da tinh ten khong trung O THOI DIEM check,
+            // nhung van co the bi race condition (2 request duplicate() cung
+            // note gan nhu dong thoi) - UNIQUE constraint o DB la lop bao ve
+            // cuoi cung, giong het createNote()/rename() o tren.
+            copy = noteRepository.saveAndFlush(copy);
+        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
+            throw new DuplicateFileNameException(candidateName);
+        }
 
         fileStorageService.copy(source.getFilePath(), copy.getFilePath());
         String content = fileStorageService.read(copy.getFilePath());

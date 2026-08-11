@@ -1,7 +1,7 @@
 package com.noted.backend.service.impl;
 
-import com.noted.backend.entity.RefreshToken;
-import com.noted.backend.entity.User;
+import com.noted.backend.domain.entity.RefreshToken;
+import com.noted.backend.domain.entity.User;
 import com.noted.backend.exception.InvalidRefreshTokenException;
 import com.noted.backend.repository.RefreshTokenRepository;
 import com.noted.backend.repository.UserRepository;

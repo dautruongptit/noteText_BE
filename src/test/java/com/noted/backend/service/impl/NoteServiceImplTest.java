@@ -1,6 +1,7 @@
 package com.noted.backend.service.impl;
 
-import com.noted.backend.enums.SyncState;
+import com.noted.backend.domain.entity.Note;
+import com.noted.backend.domain.enums.SyncState;
 import com.noted.backend.dto.request.CreateNoteRequest;
 import com.noted.backend.dto.request.RenameNoteRequest;
 import com.noted.backend.dto.response.BulkDeleteResponse;
@@ -67,9 +68,11 @@ class NoteServiceImplTest {
 
         assertThat(result.displayName()).isEqualTo("Welcome.txt");
         assertThat(result.content()).isEqualTo("hello");
+        assertThat(result.syncState()).isEqualTo(SyncState.PENDING_DRIVE.name());
         verify(fileStorageService).writeAtomic(anyString(), eq("hello"));
-        // Event phai duoc phat de kich hoat sync Drive gan nhu ngay lap tuc (SEC-03)
-        verify(eventPublisher).publishEvent(any());
+        // Debounce Sync (khong con publish event ngay khi tao note, xem NoteServiceImpl) -
+        // note chi duoc danh dau dirty=true, cho job dinh ky/"Dong bo ngay" xu ly rieng
+        verifyNoInteractions(eventPublisher);
     }
 
     // ---------- 2. RACE CONDITION TRUNG TEN - trong tam cua SEC-11 ----------
