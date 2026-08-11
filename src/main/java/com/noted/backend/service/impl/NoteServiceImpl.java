@@ -66,38 +66,29 @@ public class NoteServiceImpl implements NoteService {
     public NoteDetailResponse createNote(Long userId, CreateNoteRequest request) {
         String displayName = request.displayName().trim();
 
-        // 1) Kiem tra nhanh o tang service (UX tot hon, bao loi ro rang)
-        if (noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(userId, displayName)) {
-            throw new DuplicateFileNameException(displayName);
-        }
-
         Note note = Note.builder()
                 .userId(userId)
                 .displayName(displayName)
                 .syncState(SyncState.PENDING_DRIVE)
                 .dirty(true) // note moi -> chua tung len Drive, can duoc debounce-sync
                 .build();
+
+        // name la cot unique(user_id, name) o DB -> dung UUID cua note
+        // lam gia tri, khong con phu thuoc vao displayName nua
+        note.setDisplayName(note.getUuid().toString());
         note.setFilePath(fileStorageService.buildRelativePath(userId, note.getUuid()));
 
         String content = request.initialContent() != null ? request.initialContent() : "";
 
-        try {
-            // 2) UNIQUE constraint o DB la lop bao ve cuoi cung, chong duoc race condition
-            //    (2 request tao file cung ten gan nhu dong thoi). Bat ca
-            //    ConstraintViolationException goc cua Hibernate phong truong
-            //    hop Spring chua kip translate sang DataIntegrityViolationException
-            //    (VD flush xay ra o thoi diem exception chua duoc boc lai).
-            note = noteRepository.saveAndFlush(note);
-        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
-            throw new DuplicateFileNameException(displayName);
-        }
+        // Khong con can catch DataIntegrityViolationException / ConstraintViolationException
+        // rieng cho truong hop trung ten nua, vi name gio la UUID -> xac suat trung = 0.
+        note = noteRepository.saveAndFlush(note);
 
         writeContentAndUpdateMetadata(note, content);
         note = noteRepository.save(note);
 
         return NoteDetailResponse.of(note, content);
     }
-
     @Override
     @Transactional
     public NoteDetailResponse updateContent(Long userId, Long noteId, UpdateContentRequest request) {
