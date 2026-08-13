@@ -12,10 +12,12 @@ import java.util.UUID;
  * tai duong dan {filePath}, ten vat ly tren disk = uuid + ".txt" (khong dung display_name
  * lam ten file that -> tranh path traversal / ky tu dac biet / conflict khi rename).
  */
+// LUU Y: KHONG (con) unique constraint tren (user_id, display_name) - xem
+// V4__drop_notes_unique_name.sql. Google Drive cho phep trung ten trong 1
+// folder, dong bo 2 chieu CHI dung drive_file_id/uuid de doi chieu, KHONG
+// BAO GIO dung display_name - display_name gio chi la nhan hien thi (UI).
 @Entity
-@Table(name = "notes", uniqueConstraints = {
-        @UniqueConstraint(name = "uq_notes_user_name", columnNames = {"user_id", "display_name"})
-})
+@Table(name = "notes")
 @Getter
 @Setter
 @NoArgsConstructor

@@ -225,6 +225,87 @@ public class DriveSyncServiceImpl implements DriveSyncService {
 
     @Override
     @Transactional
+    public void pullFromDrive(Long userId) {
+        User user = userRepository.findById(userId).orElseThrow();
+        if (!user.isDriveConnected()) {
+            return; // chua ket noi Drive, khong co gi de pull
+        }
+
+        String folderId = ensureAppFolder(userId);
+        Drive drive = googleDriveService.buildClient(user);
+        List<GoogleDriveService.DriveFileInfo> driveFiles = googleDriveService.listFilesInFolder(drive, folderId);
+
+        for (GoogleDriveService.DriveFileInfo driveFile : driveFiles) {
+            try {
+                pullOneFile(userId, drive, driveFile);
+            } catch (Exception e) {
+                // Best-effort theo tung file - 1 file loi (VD Drive tra 404
+                // giua chung, mat mang giua chung) khong duoc lam sap ca vong
+                // lap con lai cua cac file khac.
+                log.warn("Pull file Drive (id={}, name={}) that bai cho userId={}",
+                        driveFile.id(), driveFile.name(), userId, e);
+            }
+        }
+    }
+
+    private void pullOneFile(Long userId, Drive drive, GoogleDriveService.DriveFileInfo driveFile) {
+        Note note = noteRepository.findByDriveFileId(driveFile.id()).orElse(null);
+
+        if (note == null) {
+            // File "la" - khong tim thay note local nao khop drive_file_id nay
+            // (tao truc tiep tren Drive, hoac tu 1 thiet bi/tai khoan khac cung
+            // chia se app folder). Tao note MOI, display_name lay dung ten tren
+            // Drive - CO THE trung ten voi note khac, van hop le (xem V4 migration).
+            String content = googleDriveService.downloadFileContent(drive, driveFile.id());
+
+            Note created = Note.builder()
+                    .userId(userId)
+                    .displayName(driveFile.name())
+                    .syncState(SyncState.SYNCED)
+                    .dirty(false) // vua pull ve, dang khop 100% voi Drive, chua can day lai
+                    .driveFileId(driveFile.id())
+                    .build();
+            created.setFilePath(fileStorageService.buildRelativePath(userId, created.getUuid()));
+
+            long bytesWritten = fileStorageService.writeAtomic(created.getFilePath(), content);
+            created.setContentSizeBytes(bytesWritten);
+            created.setContentHash(HashUtil.sha256(content));
+            created.setDriveSyncedAt(LocalDateTime.now());
+
+            noteRepository.save(created);
+            return;
+        }
+
+        if (note.isDeleted() || note.isDirty()) {
+            // Da xoa o local (cho purge - khong can pull ve nua), HOAC dang co
+            // thay doi local CHUA kip day len Drive - KHONG ghi de, tranh mat
+            // du lieu local. Lan sync ke tiep se push xong (het dirty) roi moi
+            // doi chieu pull lai note nay.
+            return;
+        }
+
+        String remoteMd5 = googleDriveService.getFileChecksum(drive, driveFile.id());
+        String localMd5 = HashUtil.md5(fileStorageService.read(note.getFilePath()));
+        if (remoteMd5 != null && remoteMd5.equalsIgnoreCase(localMd5)) {
+            return; // noi dung khop nhau, khong co gi moi de pull ve
+        }
+
+        // Drive co thay doi that su (sua truc tiep tren Drive, hoac tu thiet
+        // bi khac) - tai ve VA ghi DE dung file vat ly cu tai note.filePath
+        // (KHONG tao file moi, KHONG doi uuid/drive_file_id).
+        String content = googleDriveService.downloadFileContent(drive, driveFile.id());
+        long bytesWritten = fileStorageService.writeAtomic(note.getFilePath(), content);
+        note.setContentSizeBytes(bytesWritten);
+        note.setContentHash(HashUtil.sha256(content));
+        note.setSyncState(SyncState.SYNCED);
+        note.setDriveSyncedAt(LocalDateTime.now());
+        note.setDriveSyncAttempts(0);
+        note.setDriveSyncError(null);
+        noteRepository.save(note);
+    }
+
+    @Override
+    @Transactional
     public void disconnect(Long userId) {
         User user = userRepository.findById(userId).orElseThrow();
         user.setDriveConnected(false);

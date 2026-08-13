@@ -6,7 +6,8 @@ import com.noted.backend.dto.request.CreateNoteRequest;
 import com.noted.backend.dto.request.RenameNoteRequest;
 import com.noted.backend.dto.response.BulkDeleteResponse;
 import com.noted.backend.dto.response.NoteDetailResponse;
-import com.noted.backend.exception.DuplicateFileNameException;
+import com.noted.backend.dto.response.NoteSummaryResponse;
+import com.noted.backend.event.NoteDeletedEvent;
 import com.noted.backend.exception.NoteNotFoundException;
 import com.noted.backend.repository.NoteRepository;
 import com.noted.backend.service.FileStorageService;
@@ -17,7 +18,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -28,9 +28,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Trong tam cua bo test nay la CASE RACE CONDITION TRUNG TEN (xem muc 2) -
- * day la ly do NoteServiceImpl phai co 2 lop bao ve (check o service + UNIQUE
- * constraint o DB) thay vi chi 1 lop, va bo test phai xac nhan CA HAI deu hoat dong.
+ * Trong tam cua bo test nay la CO CHE "TRUNG TEN -> GHI DE" (xem muc 2):
+ * createNote()/rename() KHONG con tu choi ten trung nua, ma ghi de note dang
+ * co san bang noi dung moi (giu nguyen id/uuid cua note bi ghi de).
  */
 @ExtendWith(MockitoExtension.class)
 class NoteServiceImplTest {
@@ -51,18 +51,17 @@ class NoteServiceImplTest {
         lenient().when(fileStorageService.writeAtomic(anyString(), anyString())).thenReturn(0L);
     }
 
-    // ---------- 1. Tao note - duong thanh cong ----------
+    // ---------- 1. Tao note - duong thanh cong (ten chua ton tai) ----------
 
     @Test
     void createNote_thanhCong_khiTenChuaTonTai() {
-        when(noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Welcome.txt"))
-                .thenReturn(false);
-        when(noteRepository.saveAndFlush(any(Note.class))).thenAnswer(inv -> {
+        when(noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Welcome.txt"))
+                .thenReturn(Optional.empty());
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> {
             Note n = inv.getArgument(0);
-            n.setId(100L);
+            if (n.getId() == null) n.setId(100L);
             return n;
         });
-        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> inv.getArgument(0));
 
         NoteDetailResponse result = noteService.createNote(USER_ID, new CreateNoteRequest("Welcome.txt", "hello"));
 
@@ -75,55 +74,63 @@ class NoteServiceImplTest {
         verifyNoInteractions(eventPublisher);
     }
 
-    // ---------- 2. RACE CONDITION TRUNG TEN - trong tam cua SEC-11 ----------
+    // ---------- 2. TRUNG TEN -> GHI DE (thay cho tu choi 409 truoc day) ----------
 
     @Test
-    void createNote_baoLoiNgay_khiServiceLayerDaThayTenTrung() {
-        // Truong hop binh thuong (khong race condition): check o tang service
-        // da phat hien duoc luon, KHONG can dung toi DB constraint.
-        when(noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Note.txt"))
-                .thenReturn(true);
+    void createNote_ghiDeNoteDaCoSan_khiTenTrung() {
+        Note existingNote = ownedNote(7L, "Note.txt");
+        when(noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Note.txt"))
+                .thenReturn(Optional.of(existingNote));
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> noteService.createNote(USER_ID, new CreateNoteRequest("Note.txt", "")))
-                .isInstanceOf(DuplicateFileNameException.class);
+        NoteDetailResponse result = noteService.createNote(USER_ID, new CreateNoteRequest("Note.txt", "noi dung moi"));
 
-        // QUAN TRONG: khong duoc goi saveAndFlush/ghi file gi ca neu da bi chan tu som
-        verify(noteRepository, never()).saveAndFlush(any());
-        verify(fileStorageService, never()).writeAtomic(anyString(), anyString());
+        // Van la note CU (id 7L) - khong tao note moi, chi ghi de noi dung
+        assertThat(result.id()).isEqualTo(7L);
+        assertThat(result.content()).isEqualTo("noi dung moi");
+        verify(fileStorageService).writeAtomic(anyString(), eq("noi dung moi"));
+        assertThat(existingNote.isDirty()).isTrue();
+        assertThat(existingNote.getSyncState()).isEqualTo(SyncState.PENDING_DRIVE);
     }
 
     @Test
-    void createNote_vanBaoLoiDuplicate_khiRaceConditionVuotQuaCheckOTangService() {
-        // Mo phong CHINH XAC tinh huong race condition: 2 request tao file cung
-        // ten GAN NHU DONG THOI. Tai thoi diem ca 2 cung goi
-        // existsByUserIdAndDisplayNameAndDeletedFalse(), CA HAI DEU thay false
-        // (vi chua request nao insert xong) -> ca 2 cung vuot qua duoc buoc check
-        // o tang service. Request THU HAI insert sau se bi UNIQUE constraint o DB
-        // tu choi, Spring Data JPA nem ra DataIntegrityViolationException.
-        when(noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "New Note.txt"))
-                .thenReturn(false); // ca 2 request "thay" chua trung luc kiem tra
-        when(noteRepository.saveAndFlush(any(Note.class)))
-                .thenThrow(new DataIntegrityViolationException("Duplicate entry for key uq_notes_user_name"));
+    void rename_ghiDeNoteDich_vaXoaMemNoteNguon_khiTenTrung() {
+        Note source = ownedNote(5L, "Draft.txt");
+        Note target = ownedNote(9L, "Report.txt");
+        when(noteRepository.findByIdAndUserIdAndDeletedFalse(5L, USER_ID)).thenReturn(Optional.of(source));
+        when(noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Report.txt"))
+                .thenReturn(Optional.of(target));
+        when(fileStorageService.read(source.getFilePath())).thenReturn("noi dung cua Draft");
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> noteService.createNote(USER_ID, new CreateNoteRequest("New Note.txt", "")))
-                .isInstanceOf(DuplicateFileNameException.class);
+        NoteSummaryResponse result = noteService.rename(USER_ID, 5L, new RenameNoteRequest("Report.txt"));
 
-        // UNIQUE constraint (lop bao ve THU 2) da chan thanh cong - dung nhu thiet ke.
-        // Ghi file KHONG duoc goi vi exception xay ra truoc buoc writeContentAndUpdateMetadata.
-        verify(fileStorageService, never()).writeAtomic(anyString(), anyString());
-        verify(eventPublisher, never()).publishEvent(any());
+        // Ket qua tra ve la note DICH (id 9L, khong phai 5L) - id thay doi bao
+        // hieu cho FE biet day la 1 lan "nhap" (merge), khong phai doi ten binh thuong
+        assertThat(result.id()).isEqualTo(9L);
+        verify(fileStorageService).writeAtomic(target.getFilePath(), "noi dung cua Draft");
+        assertThat(target.isDirty()).isTrue();
+        // Note nguon bi xoa mem, KHONG xoa cung - va Drive cua no duoc don ngay qua event
+        assertThat(source.isDeleted()).isTrue();
+        assertThat(source.getDeletedAt()).isNotNull();
+        verify(eventPublisher).publishEvent(argThat(e -> e instanceof NoteDeletedEvent
+                && ((NoteDeletedEvent) e).noteId().equals(5L)));
     }
 
     @Test
-    void rename_baoLoiDuplicate_khiRaceConditionVuotQuaCheckOTangService() {
-        Note existing = ownedNote(5L, "Draft.txt");
-        when(noteRepository.findByIdAndUserIdAndDeletedFalse(5L, USER_ID)).thenReturn(Optional.of(existing));
-        when(noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Report.txt")).thenReturn(false);
-        when(noteRepository.saveAndFlush(any(Note.class)))
-                .thenThrow(new DataIntegrityViolationException("Duplicate entry"));
+    void rename_doiTenBinhThuong_khiTenMoiChuaTonTai() {
+        Note note = ownedNote(5L, "Draft.txt");
+        when(noteRepository.findByIdAndUserIdAndDeletedFalse(5L, USER_ID)).thenReturn(Optional.of(note));
+        when(noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(USER_ID, "Final.txt"))
+                .thenReturn(Optional.empty());
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThatThrownBy(() -> noteService.rename(USER_ID, 5L, new RenameNoteRequest("Report.txt")))
-                .isInstanceOf(DuplicateFileNameException.class);
+        NoteSummaryResponse result = noteService.rename(USER_ID, 5L, new RenameNoteRequest("Final.txt"));
+
+        assertThat(result.id()).isEqualTo(5L);
+        assertThat(result.displayName()).isEqualTo("Final.txt");
+        verify(fileStorageService, never()).writeAtomic(anyString(), anyString());
+        verifyNoInteractions(eventPublisher);
     }
 
     // ---------- 3. Note khong ton tai / khong thuoc user ----------

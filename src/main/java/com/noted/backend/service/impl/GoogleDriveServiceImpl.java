@@ -18,6 +18,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -216,6 +217,21 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         } catch (Exception e) {
             log.warn("List file trong folder Drive '{}' that bai", folderId, e);
             throw new GoogleDriveOperationException("Khong the lay danh sach file tu Google Drive", e);
+        }
+    }
+
+    @Override
+    public String downloadFileContent(Drive drive, String fileId) {
+        if (!StringUtils.hasText(fileId)) {
+            throw new IllegalArgumentException("fileId khong duoc de trong khi tai noi dung file");
+        }
+
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            drive.files().get(fileId).executeMediaAndDownloadTo(out);
+            return out.toString(StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("Tai noi dung file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the tai noi dung file tu Google Drive (id=" + fileId + ")", e);
         }
     }
 

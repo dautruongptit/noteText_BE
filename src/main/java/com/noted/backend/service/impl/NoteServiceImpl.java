@@ -9,22 +9,20 @@ import com.noted.backend.dto.response.BulkDeleteResponse;
 import com.noted.backend.dto.response.NoteDetailResponse;
 import com.noted.backend.dto.response.NoteSummaryResponse;
 import com.noted.backend.event.NoteDeletedEvent;
-import com.noted.backend.exception.DuplicateFileNameException;
 import com.noted.backend.exception.NoteNotFoundException;
 import com.noted.backend.repository.NoteRepository;
 import com.noted.backend.service.FileStorageService;
 import com.noted.backend.service.NoteService;
 import com.noted.backend.util.HashUtil;
 import lombok.RequiredArgsConstructor;
-import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * QUAN TRONG - luong dong bo Drive DA DOI (xem DriveSyncServiceImpl, "Debounce
@@ -65,6 +63,26 @@ public class NoteServiceImpl implements NoteService {
     @Transactional
     public NoteDetailResponse createNote(Long userId, CreateNoteRequest request) {
         String displayName = request.displayName().trim();
+        String content = request.initialContent() != null ? request.initialContent() : "";
+
+        // Khong cho phep 2 note active cung ten trong 1 user. Thay vi tu choi
+        // (409 DUPLICATE_FILE_NAME nhu truoc), GHI DE note dang co san bang
+        // noi dung moi - giu nguyen id/uuid/lien ket Drive (drive_file_id) cua
+        // note cu, chi thay content/hash/size. Khong con UNIQUE constraint o DB
+        // nua (V4__drop_notes_unique_name.sql) nen khong co race-condition
+        // fallback rieng - "ghi de" tu no la ket qua an toan ke ca khi 2
+        // request gan nhu dong thoi cung tao 1 ten (ai save() sau se thang,
+        // khong con truong hop bi DB tu choi giua chung).
+        Optional<Note> existing = noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(userId, displayName);
+        if (existing.isPresent()) {
+            Note note = existing.get();
+            writeContentAndUpdateMetadata(note, content);
+            note.setSyncState(SyncState.PENDING_DRIVE);
+            note.setDirty(true);
+            note.setDriveSyncAttempts(0);
+            note = noteRepository.save(note);
+            return NoteDetailResponse.of(note, content);
+        }
 
         Note note = Note.builder()
                 .userId(userId)
@@ -72,18 +90,9 @@ public class NoteServiceImpl implements NoteService {
                 .syncState(SyncState.PENDING_DRIVE)
                 .dirty(true) // note moi -> chua tung len Drive, can duoc debounce-sync
                 .build();
-
-        // name la cot unique(user_id, name) o DB -> dung UUID cua note
-        // lam gia tri, khong con phu thuoc vao displayName nua
-        note.setDisplayName(note.getUuid().toString());
         note.setFilePath(fileStorageService.buildRelativePath(userId, note.getUuid()));
 
-        String content = request.initialContent() != null ? request.initialContent() : "";
-
-        // Khong con can catch DataIntegrityViolationException / ConstraintViolationException
-        // rieng cho truong hop trung ten nua, vi name gio la UUID -> xac suat trung = 0.
-        note = noteRepository.saveAndFlush(note);
-
+        note = noteRepository.save(note);
         writeContentAndUpdateMetadata(note, content);
         note = noteRepository.save(note);
 
@@ -109,9 +118,32 @@ public class NoteServiceImpl implements NoteService {
         Note note = findOwnedNote(userId, noteId);
         String newName = request.newDisplayName().trim();
 
-        if (!newName.equals(note.getDisplayName())
-                && noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(userId, newName)) {
-            throw new DuplicateFileNameException(newName);
+        if (newName.equals(note.getDisplayName())) {
+            return NoteSummaryResponse.from(note);
+        }
+
+        Optional<Note> collision = noteRepository.findByUserIdAndDisplayNameAndDeletedFalse(userId, newName);
+        if (collision.isPresent()) {
+            // Doi ten trung voi 1 note KHAC dang ton tai -> "ghi de file moi":
+            // note DICH (collision) duoc GHI DE bang noi dung cua note NGUON
+            // (note dang doi ten), giu nguyen id/uuid/lien ket Drive cua note
+            // DICH. Note NGUON coi nhu da "nhap" vao note dich -> xoa mem (cung
+            // luong voi delete(), don Drive ngay qua NoteDeletedEvent).
+            Note target = collision.get();
+            String sourceContent = fileStorageService.read(note.getFilePath());
+
+            writeContentAndUpdateMetadata(target, sourceContent);
+            target.setSyncState(SyncState.PENDING_DRIVE);
+            target.setDirty(true);
+            target.setDriveSyncAttempts(0);
+            target = noteRepository.save(target);
+
+            note.setDeleted(true);
+            note.setDeletedAt(LocalDateTime.now());
+            noteRepository.save(note);
+            eventPublisher.publishEvent(new NoteDeletedEvent(note.getId()));
+
+            return NoteSummaryResponse.from(target);
         }
 
         // Chi doi ten hien thi trong DB, KHONG dung den file vat ly (ten vat ly la UUID co dinh)
@@ -119,11 +151,7 @@ public class NoteServiceImpl implements NoteService {
         // Ten hien thi cung la ten file tren Drive (xem GoogleDriveService.updateFile) -
         // doi ten cung can day len Drive lai, danh dau dirty tuong tu doi content.
         note.setDirty(true);
-        try {
-            note = noteRepository.saveAndFlush(note);
-        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
-            throw new DuplicateFileNameException(newName);
-        }
+        note = noteRepository.save(note);
 
         return NoteSummaryResponse.from(note);
     }
@@ -145,15 +173,14 @@ public class NoteServiceImpl implements NoteService {
                 .build();
         copy.setFilePath(fileStorageService.buildRelativePath(userId, copy.getUuid()));
 
-        try {
-            // resolveAvailableName() da tinh ten khong trung O THOI DIEM check,
-            // nhung van co the bi race condition (2 request duplicate() cung
-            // note gan nhu dong thoi) - UNIQUE constraint o DB la lop bao ve
-            // cuoi cung, giong het createNote()/rename() o tren.
-            copy = noteRepository.saveAndFlush(copy);
-        } catch (DataIntegrityViolationException | ConstraintViolationException e) {
-            throw new DuplicateFileNameException(candidateName);
-        }
+        // Khac voi createNote()/rename(): ten o day la TU SINH ("X (copy)"),
+        // khong phai nguoi dung go - ghi de 1 note khac chi vi trung ten tu
+        // sinh se gay bat ngo/mat du lieu vo ly, nen GIU NGUYEN co che tu tim
+        // ten trong (resolveAvailableName) thay vi ghi de nhu 2 ham tren.
+        // Khong con try/catch DataIntegrityViolationException o day nua - tu
+        // khi bo UNIQUE(user_id, display_name) (V4__drop_notes_unique_name.sql)
+        // constraint nay khong con ton tai de nem loi nua.
+        copy = noteRepository.save(copy);
 
         fileStorageService.copy(source.getFilePath(), copy.getFilePath());
         String content = fileStorageService.read(copy.getFilePath());

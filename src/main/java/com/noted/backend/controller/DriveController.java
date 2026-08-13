@@ -145,12 +145,17 @@ public class DriveController {
     @PostMapping("/sync-all")
     public Map<String, String> syncAll(@AuthenticationPrincipal Long userId) {
         driveSyncService.ensureAppFolder(userId);
-        // "Flush" thu cong - day NGAY toan bo note dirty cua RIENG user nay,
-        // bo qua nguong debounce 30s (xem DriveSyncServiceImpl, "Debounce Sync").
-        // Dung chung cho ca nut "Dong bo ngay" TREN UI lan luc trinh duyet
-        // flush khi dong tab (frontend goi CUNG endpoint nay qua
-        // fetch(..., {keepalive:true})).
+        // PUSH truoc: "Flush" thu cong - day NGAY toan bo note dirty cua RIENG
+        // user nay, bo qua nguong debounce 30s (xem DriveSyncServiceImpl,
+        // "Debounce Sync"). Dung chung cho ca nut "Dong bo ngay" TREN UI lan
+        // luc trinh duyet flush khi dong tab (frontend goi CUNG endpoint nay
+        // qua fetch(..., {keepalive:true})).
         driveSyncService.flushDirtyNotes(userId);
+        // PULL sau: doi chieu nguoc lai voi Drive (file moi tao truc tiep tren
+        // Drive/tu thiet bi khac, hoac Drive co thay doi noi dung). PUSH truoc
+        // dam bao Drive da co ban local moi nhat truoc khi doi chieu, tranh
+        // pull nham phai ban Drive cu (xem DriveSyncService.pullFromDrive javadoc).
+        driveSyncService.pullFromDrive(userId);
         return Map.of("message", "sync_triggered");
     }
 

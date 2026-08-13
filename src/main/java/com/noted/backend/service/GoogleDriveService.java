@@ -77,6 +77,14 @@ public interface GoogleDriveService {
     /** List toan bo file trong 1 folder, kem metadata day du (size/modifiedTime/owner/mimeType) */
     List<DriveFileInfo> listFilesInFolder(Drive drive, String folderId);
 
+    /**
+     * Tai NOI DUNG THAT SU cua 1 file tren Drive ve (dung cho luong PULL -
+     * xem DriveSyncServiceImpl.pullFromDrive). Note chi luu text (xem
+     * uploadFile/updateFile deu dung "text/plain" UTF-8), nen tra ve thang
+     * String, khong can xu ly binary/Blob.
+     */
+    String downloadFileContent(Drive drive, String fileId);
+
     /** Chuyen 1 file vao thung rac Drive (KHONG xoa vinh vien - van khoi phuc duoc) */
     void trashFile(Drive drive, String fileId);
 

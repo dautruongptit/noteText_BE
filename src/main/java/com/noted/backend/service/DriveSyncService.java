@@ -27,6 +27,22 @@ public interface DriveSyncService {
      */
     void flushDirtyNotes(Long userId);
 
+    /**
+     * "PULL": liet ke toan bo file trong app folder tren Drive cua user, doi
+     * chieu voi note local QUA drive_file_id (KHONG BAO GIO qua display_name -
+     * Drive cho phep trung ten, xem V4__drop_notes_unique_name.sql):
+     *  - Khong tim thay note nao co drive_file_id nay -> file "la" (tao truc
+     *    tiep tren Drive hoac tu thiet bi khac) -> tao note MOI o local.
+     *  - Tim thay -> so sanh md5Checksum voi noi dung local, chi tai ve/ghi
+     *    de neu THAT SU khac (tranh I/O thua) VA note dang khong dirty (con
+     *    dirty=true nghia la local co thay doi chua kip day len - BO QUA de
+     *    khong ghi de mat du lieu local, cho lan sync ke tiep push xong roi
+     *    moi pull lai).
+     * Goi SAU flushDirtyNotes() trong 1 lan "Dong bo ngay" (xem DriveController.syncAll)
+     * - PUSH truoc dam bao Drive da co ban local moi nhat truoc khi doi chieu nguoc lai.
+     */
+    void pullFromDrive(Long userId);
+
     void disconnect(Long userId);
 
     /**

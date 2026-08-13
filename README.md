@@ -4,7 +4,7 @@ Backend cho ứng dụng ghi chú **Noted**, xây dựng theo Clean Architecture
 - Đăng nhập bằng Google (OAuth2 + JWT nội bộ + refresh token rotation)
 - Lưu metadata note trong **MySQL**, nội dung file thật trên **filesystem của Ubuntu server**
 - Đồng bộ nền (background job, "Debounce Sync") lên **Google Drive**
-- Chặn trùng tên file ở cả tầng service lẫn DB constraint (3 chỗ: create/rename/duplicate)
+- Không cho phép 2 note active cùng tên trong 1 user — trùng tên ở `create`/`rename` thì **ghi đè** note đang có (giữ nguyên id/uuid); `duplicate` vẫn tự tránh trùng bằng hậu tố "(copy)"
 - Hỗ trợ **offline-first**: client dùng IndexedDB làm buffer, đồng bộ lại khi server online trở lại
 
 > Đây là nửa **backend** của dự án Noted. Nửa **frontend** (React/Vite/TS, local-first) nằm ở
@@ -40,17 +40,27 @@ Nguyên tắc dependency: `controller → service → repository`, không có ch
 
 → Người dùng gõ chữ không bao giờ bị chặn bởi tốc độ/rate-limit của Google Drive API.
 
-## 3. Chặn trùng tên file — 2 lớp bảo vệ, áp dụng ở cả 3 thao tác ghi tên
+## 3. Trùng tên file — GHI ĐÈ thay vì từ chối (đổi từ SEC-11)
 
-1. **Tầng service** (`NoteServiceImpl`): `existsByUserIdAndDisplayNameAndDeletedFalse` — trả lỗi rõ ràng, UX tốt.
-2. **Tầng DB** (`UNIQUE(user_id, display_name)` trong migration `V1__init_schema.sql`) — chặn race
-   condition khi 2 request cùng tạo/đổi tên file trùng nhau gần như đồng thời (service check không
-   đủ an toàn một mình vì có khoảng hở giữa check và insert/update).
+Trước đây trùng tên bị từ chối 409 (`DuplicateFileNameException`/`DUPLICATE_FILE_NAME`), bảo vệ bằng
+2 lớp (service check + `UNIQUE(user_id, display_name)` ở DB). Từ bản này, hành vi đổi hoàn toàn:
 
-Áp dụng đồng nhất ở cả `createNote()`, `rename()` **và** `duplicate()` — bắt cả
-`DataIntegrityViolationException` (đã được Spring dịch lại) lẫn `org.hibernate.exception.ConstraintViolationException`
-(exception gốc của Hibernate, phòng trường hợp bị lọt ra trước khi Spring kịp dịch), convert thành
-`DuplicateFileNameException` → `GlobalExceptionHandler` trả về **409 Conflict** (`DUPLICATE_FILE_NAME`).
+- **`createNote()`**: tên trùng với 1 note active đang có → **ghi đè nội dung note đó** (giữ nguyên
+  `id`/`uuid`/`drive_file_id` của note cũ), không tạo note mới, không báo lỗi.
+- **`rename()`**: đổi tên trùng với 1 note **khác** đang có (target) → **ghi đè nội dung target**
+  bằng nội dung của note đang đổi tên (source), giữ nguyên `id`/`uuid` của target; note nguồn (source)
+  bị xoá mềm (cùng luồng với `delete()`, dọn Drive ngay qua `NoteDeletedEvent`). Response trả về là
+  của **target** (`id` khác `id` request ban đầu) — FE (`useRename.ts`) dựa vào `id` khác nhau này để
+  biết đây là 1 lần merge, không phải đổi tên bình thường.
+- **`duplicate()`**: **không đổi** — tên "X (copy)" là tự sinh (không phải người dùng gõ), vẫn tự tìm
+  tên trống qua `resolveAvailableName()` thay vì ghi đè, tránh mất dữ liệu bất ngờ chỉ vì tên hệ thống tự đặt bị trùng.
+
+Không còn `UNIQUE(user_id, display_name)` ở DB (đã drop từ `V4__drop_notes_unique_name.sql`, vì Drive
+cho phép trùng tên) nên không có race-condition fallback riêng nữa — "ghi đè" tự nó là kết quả an toàn
+kể cả khi 2 request tạo/đổi tên gần như đồng thời (ai `save()` sau sẽ thắng).
+
+FE hiện cảnh báo (không chặn) khi phát hiện trùng tên trước khi gọi API, yêu cầu người dùng bấm
+Lưu/Enter thêm 1 lần nữa để xác nhận ghi đè — xem `RenameModal.tsx`/`useRename.ts` ở repo `noteText_web`.
 
 ## 4. Ghi file atomic (chống hỏng file khi server crash giữa chừng)
 
@@ -186,7 +196,7 @@ Nếu chạy frontend bằng `pnpm dev` trực tiếp (không qua nginx), nhớ 
 - ✅ `GoogleTokenExchangeService` (đổi `code` → `access_token`/`refresh_token`) — `GoogleTokenExchangeServiceImplTest`
 - ✅ Refresh token + rotation cho JWT nội bộ — `RefreshTokenServiceImplTest`
 - ✅ Rate limiting cho `PATCH /content` — `RateLimitInterceptor` + `TokenBucket`
-- ✅ Chặn trùng tên 2 lớp ở cả create/rename/duplicate — `NoteServiceImplTest`
+- ✅ Trùng tên → ghi đè ở `create`/`rename` (giữ nguyên `duplicate` tự tránh trùng) — `NoteServiceImplTest`
 - ✅ Ghi file atomic — `LocalFileStorageServiceImplTest`
 
 Còn thiếu / dở dang thật sự (đã đọc trực tiếp code để xác nhận, không suy đoán):

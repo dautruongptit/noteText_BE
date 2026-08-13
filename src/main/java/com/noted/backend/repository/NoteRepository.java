@@ -21,7 +21,16 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
 
     boolean existsByUserIdAndDisplayNameAndDeletedFalse(Long userId, String displayName);
 
+    // Dung cho co che "trung ten -> ghi de" (createNote/rename, xem NoteServiceImpl):
+    // can note THAT SU (khong chi boolean) de ghi de noi dung len note dang co san.
+    Optional<Note> findByUserIdAndDisplayNameAndDeletedFalse(Long userId, String displayName);
+
     Optional<Note> findByUuid(String uuid);
+
+    // Dung cho luong PULL (Drive -> local, xem DriveSyncServiceImpl.pullFromDrive):
+    // doi chieu file tren Drive voi note local DUY NHAT qua drive_file_id -
+    // KHONG BAO GIO doi chieu qua display_name (Drive cho phep trung ten).
+    Optional<Note> findByDriveFileId(String driveFileId);
 
     // Dung cho job nen dong bo Drive: lay cac note dang cho sync, gioi han so lan retry
     List<Note> findTop50BySyncStateInAndDriveSyncAttemptsLessThanOrderByUpdatedAtAsc(

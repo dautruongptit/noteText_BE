@@ -13,11 +13,6 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(DuplicateFileNameException.class)
-    public ResponseEntity<?> handleDuplicateName(DuplicateFileNameException ex) {
-        return build(HttpStatus.CONFLICT, "DUPLICATE_FILE_NAME", ex.getMessage());
-    }
-
     @ExceptionHandler(NoteNotFoundException.class)
     public ResponseEntity<?> handleNotFound(NoteNotFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "NOTE_NOT_FOUND", ex.getMessage());
