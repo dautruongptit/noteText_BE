@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 
@@ -37,6 +38,8 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class NoteServiceImpl implements NoteService {
+
+    private static final DateTimeFormatter CONFLICT_SUFFIX_FORMAT = DateTimeFormatter.ofPattern("dd/MM HH:mm");
 
     private final NoteRepository noteRepository;
     private final FileStorageService fileStorageService;
@@ -187,6 +190,29 @@ public class NoteServiceImpl implements NoteService {
 
         copy.setContentHash(HashUtil.sha256(content));
         copy.setContentSizeBytes((long) content.getBytes(StandardCharsets.UTF_8).length);
+        copy = noteRepository.save(copy);
+
+        return NoteDetailResponse.of(copy, content);
+    }
+
+    @Override
+    @Transactional
+    public NoteDetailResponse createConflictCopy(Long userId, String originalDisplayName, String content) {
+        String suffix = " (xung dot " + LocalDateTime.now().format(CONFLICT_SUFFIX_FORMAT) + ")";
+        String candidateName = resolveAvailableName(userId,
+                stripExtension(originalDisplayName) + suffix + extractExtension(originalDisplayName));
+
+        Note copy = Note.builder()
+                .userId(userId)
+                .displayName(candidateName)
+                .syncState(SyncState.PENDING_DRIVE)
+                .dirty(true) // ban conflict cung can duoc day len Drive nhu 1 note binh thuong
+                .conflictCopy(true)
+                .build();
+        copy.setFilePath(fileStorageService.buildRelativePath(userId, copy.getUuid()));
+
+        copy = noteRepository.save(copy);
+        writeContentAndUpdateMetadata(copy, content);
         copy = noteRepository.save(copy);
 
         return NoteDetailResponse.of(copy, content);

@@ -24,9 +24,12 @@ import java.util.Map;
  * nguoi dung. Khi ket noi lai duoc, client goi endpoint nay 1 lan de day toan bo
  * cac note dang o trang thai "pending_server".
  *
- * Chien luoc giai quyet xung dot don gian: "ban co updatedAt moi hon thang".
- * Neu can UX tot hon (hien ca 2 ban cho nguoi dung chon), doi ket qua tra ve them
- * truong "serverContent" khi phat hien conflict thay vi tu dong ghi de.
+ * Chien luoc giai quyet xung dot: "GIU CA 2 BAN" (doi tu ban dau "ai updatedAt
+ * moi hon thang, ban kia bi bo") - khi server phat hien ban cua item nay CU
+ * hon ban dang co, KHONG am tham bo/ghi de nua: ban server giu nguyen (van la
+ * "ban thang"), con ban local duoc tach thanh 1 note MOI rieng bang
+ * NoteService.createConflictCopy() ("ban xung dot", ten co hau to "(xung dot
+ * dd/MM HH:mm)") - nguoi dung tu kiem tra/gop lai sau, khong mat du lieu nao.
  */
 @RestController
 @RequestMapping("/api/sync")
@@ -66,11 +69,21 @@ public class SyncController {
                 long serverEpochMs = existing.getUpdatedAt().toInstant(ZoneOffset.UTC).toEpochMilli();
 
                 if (item.localUpdatedAtEpochMs() != null && item.localUpdatedAtEpochMs() < serverEpochMs) {
-                    // Server co ban moi hon (VD da sua tu thiet bi khac) -> bao conflict, khong ghi de
+                    // Server co ban MOI HON (VD da sua tu thiet bi/phien khac trong luc
+                    // item nay con nam cho trong hang doi offline) - thay vi am tham
+                    // BO ban local (nhu truoc day, de lai rui ro nguoi dung khong biet gi
+                    // da bi mat), GIU CA 2 BAN: note server giu nguyen (van la "ban thang"),
+                    // ban local duoc tach thanh 1 note MOI rieng ("ban xung dot") - xem
+                    // NoteServiceImpl.createConflictCopy(). Client se tu xoa item nay khoi
+                    // hang doi offline (status khac "conflict" cu, xem useOfflineSync.ts)
+                    // vi du lieu da duoc luu an toan o note moi, KHONG can retry nua.
+                    var conflictCopy = noteService.createConflictCopy(userId, existing.getDisplayName(), item.content());
                     results.add(Map.of(
                             "noteId", item.noteId(),
-                            "status", "conflict",
-                            "serverUpdatedAt", existing.getUpdatedAt().toString()
+                            "status", "conflict_kept_both",
+                            "serverUpdatedAt", existing.getUpdatedAt().toString(),
+                            "conflictCopyId", conflictCopy.id(),
+                            "conflictCopyName", conflictCopy.displayName()
                     ));
                     continue;
                 }

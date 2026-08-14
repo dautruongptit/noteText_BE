@@ -85,6 +85,18 @@ public class Note {
     @Builder.Default
     private boolean deleted = false;
 
+    /**
+     * TRUE neu day la "ban sao xung dot" duoc tach ra khi dong bo phat hien 2
+     * ban khac nhau cua CUNG 1 noi dung (xem NoteServiceImpl.createConflictCopy,
+     * SyncController.syncBatch) - thay vi am tham bo/ghi de 1 trong 2 ban,
+     * he thong giu CA HAI: ban "thang" (server dang co) giu nguyen id/uuid
+     * cu, ban "thua" tro thanh 1 note MOI rieng biet voi co nay = TRUE, ten
+     * co hau to "(xung dot ...)" - nguoi dung tu kiem tra/gop lai neu can.
+     */
+    @Column(name = "is_conflict_copy", nullable = false)
+    @Builder.Default
+    private boolean conflictCopy = false;
+
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 

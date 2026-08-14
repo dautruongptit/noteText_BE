@@ -113,8 +113,11 @@ class NoteServiceImplTest {
         // Note nguon bi xoa mem, KHONG xoa cung - va Drive cua no duoc don ngay qua event
         assertThat(source.isDeleted()).isTrue();
         assertThat(source.getDeletedAt()).isNotNull();
-        verify(eventPublisher).publishEvent(argThat(e -> e instanceof NoteDeletedEvent
-                && ((NoteDeletedEvent) e).noteId().equals(5L)));
+        // NoteDeletedEvent la record (co equals()/hashCode() tu sinh theo noteId) -
+        // dung eq() truc tiep thay vi argThat()+instanceof (argThat de bi Mockito
+        // suy luan nham sang overload publishEvent(ApplicationEvent) vi
+        // NoteDeletedEvent khong extends ApplicationEvent, gay loi compile).
+        verify(eventPublisher).publishEvent(eq(new NoteDeletedEvent(5L)));
     }
 
     @Test
@@ -131,6 +134,32 @@ class NoteServiceImplTest {
         assertThat(result.displayName()).isEqualTo("Final.txt");
         verify(fileStorageService, never()).writeAtomic(anyString(), anyString());
         verifyNoInteractions(eventPublisher);
+    }
+
+    // ---------- 2b. "Giu ca 2 ban khi conflict" (SyncController.syncBatch) ----------
+
+    @Test
+    void createConflictCopy_taoNoteMoiRiengBietVoiHauToXungDot_khongDongDenNoteGoc() {
+        when(noteRepository.existsByUserIdAndDisplayNameAndDeletedFalse(eq(USER_ID), anyString()))
+                .thenReturn(false); // resolveAvailableName() thay ten hau to chua trung ai
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> {
+            Note n = inv.getArgument(0);
+            if (n.getId() == null) n.setId(200L);
+            return n;
+        });
+
+        NoteDetailResponse result = noteService.createConflictCopy(USER_ID, "Draft.txt", "noi dung ban local");
+
+        assertThat(result.content()).isEqualTo("noi dung ban local");
+        // Chuoi khong dau (dung quy uoc toan bo string BE hien co, xem VD
+        // GlobalExceptionHandler "Da co loi xay ra..." - khong dung dau de
+        // tranh rui ro mojibake o moi tang encoding)
+        assertThat(result.displayName()).startsWith("Draft (xung dot ");
+        assertThat(result.displayName()).endsWith(".txt");
+        verify(fileStorageService).writeAtomic(anyString(), eq("noi dung ban local"));
+        // Note GOC (Draft.txt that su, id/uuid rieng) khong bi dong den o day -
+        // createConflictCopy() CHI nhan ten/noi dung, khong nhan/sua entity nao co san.
+        verify(noteRepository, never()).findByIdAndUserIdAndDeletedFalse(anyLong(), anyLong());
     }
 
     // ---------- 3. Note khong ton tai / khong thuoc user ----------

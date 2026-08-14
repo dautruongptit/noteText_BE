@@ -23,6 +23,15 @@ public interface NoteService {
 
     NoteDetailResponse duplicate(Long userId, Long noteId);
 
+    /**
+     * "Giu ca 2 ban khi conflict": tao 1 note MOI rieng biet chua noi dung
+     * "thua cuoc" trong 1 lan phat hien xung dot dong bo (xem SyncController.
+     * syncBatch) - display_name = tenGoc + hau to "(xung dot dd/MM HH:mm)".
+     * KHONG dong cham gi den note dang ton tai (note do van la ban "thang",
+     * giu nguyen id/uuid/noi dung) - nguoi dung tu kiem tra/gop 2 ban sau.
+     */
+    NoteDetailResponse createConflictCopy(Long userId, String originalDisplayName, String content);
+
     void delete(Long userId, Long noteId);
 
     /**

@@ -136,7 +136,16 @@ danh bằng `fileId` có sẵn (không bao giờ tìm lại theo tên).
 Khi client mất kết nối tới server, dữ liệu vẫn giữ trong **IndexedDB** ở trình duyệt (Local Mode).
 Khi có mạng lại (hoặc sau khi đăng nhập lần đầu, xem `migrateLocalNotesToServer` ở frontend), client
 gọi 1 lần `POST /api/sync/batch` gửi toàn bộ note đang chờ. Server so sánh `localUpdatedAtEpochMs`
-từng item để phát hiện conflict, không tự ý ghi đè nếu bản trên server mới hơn.
+từng item với bản đang có.
+
+**Chiến lược conflict — "giữ cả 2 bản" (không còn tự ý bỏ bản thua):** nếu bản local đang cầm CŨ hơn
+bản server (server đã có bản mới hơn, VD sửa từ thiết bị/phiên khác trong lúc item còn nằm chờ trong
+hàng đợi offline), server **không** âm thầm bỏ bản local nữa — `NoteService.createConflictCopy()` tách
+bản local thành **1 note hoàn toàn mới** (tên có hậu tố `"(xung đột dd/MM HH:mm)"`, cờ
+`is_conflict_copy=TRUE`), trả về status `conflict_kept_both` kèm `conflictCopyId`/`conflictCopyName`.
+Note server giữ nguyên (`id`/`uuid` không đổi, vẫn là "bản thắng"). Frontend (`useOfflineSync.ts`) coi
+`conflict_kept_both` như đã đồng bộ xong (xoá khỏi hàng đợi retry), đồng thời hiện banner báo cho người
+dùng biết để tự kiểm tra/gộp — không còn tình trạng retry vô hạn trong im lặng như thiết kế cũ.
 
 ## 9. Danh sách API Endpoints (đầy đủ, đối chiếu trực tiếp với controller)
 

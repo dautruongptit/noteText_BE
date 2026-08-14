@@ -10,7 +10,8 @@ public record NoteDetailResponse(
         String displayName,
         String content,
         String syncState,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        boolean conflictCopy
 ) {
     public static NoteDetailResponse of(Note note, String content) {
         return new NoteDetailResponse(
@@ -18,7 +19,8 @@ public record NoteDetailResponse(
                 note.getDisplayName(),
                 content,
                 note.getSyncState().name(),
-                note.getUpdatedAt()
+                note.getUpdatedAt(),
+                note.isConflictCopy()
         );
     }
 }

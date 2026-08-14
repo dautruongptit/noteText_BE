@@ -9,14 +9,16 @@ public record NoteSummaryResponse(
         Long id,
         String displayName,
         String syncState,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        boolean conflictCopy
 ) {
     public static NoteSummaryResponse from(Note note) {
         return new NoteSummaryResponse(
                 note.getId(),
                 note.getDisplayName(),
                 note.getSyncState().name(),
-                note.getUpdatedAt()
+                note.getUpdatedAt(),
+                note.isConflictCopy()
         );
     }
 }
