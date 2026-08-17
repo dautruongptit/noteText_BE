@@ -68,6 +68,16 @@ public class Note {
     private String driveSyncError;
 
     /**
+     * MD5 cua noi dung TAI LAN SYNC LEN DRIVE THANH CONG GAN NHAT (baseline) -
+     * dung de DriveSyncServiceImpl.pullOneFile() phan biet "local dang dirty
+     * binh thuong" voi "conflict that su" (Drive da doi doc lap so voi lan
+     * sync truoc, trong luc local cung dang co sua chua push) - xem "mat tran
+     * B" trong javadoc DriveSyncServiceImpl. NULL = chua tung sync thanh cong.
+     */
+    @Column(name = "drive_synced_content_hash", length = 32)
+    private String driveSyncedContentHash;
+
+    /**
      * Co thay doi CHUA duoc day len Drive hay khong. Tach rieng khoi
      * "syncState" (von la enum mo ta trang thai HIEN THI cho UI: SYNCED/
      * PENDING_DRIVE/DRIVE_FAILED/CONFLICT) - "dirty" la co CHUAN dung cho
@@ -96,6 +106,17 @@ public class Note {
     @Column(name = "is_conflict_copy", nullable = false)
     @Builder.Default
     private boolean conflictCopy = false;
+
+    /**
+     * So nguyen tang dan moi lan ghi noi dung/ten THANH CONG - dung cho
+     * Optimistic Concurrency Control o /api/sync/batch (SyncController) thay
+     * cho so sanh "updatedAt" (timestamp de bi lech dong ho giua cac lan
+     * request khac nhau, xem giai thich chi tiet trong tai lieu tham khao
+     * ve co che dong bo cua Zalo). Note moi tao bat dau tu 1.
+     */
+    @Column(name = "version", nullable = false)
+    @Builder.Default
+    private int version = 1;
 
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;

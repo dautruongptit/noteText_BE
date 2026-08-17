@@ -6,6 +6,7 @@ import com.noted.backend.dto.request.SyncBatchItem;
 import com.noted.backend.dto.request.UpdateContentRequest;
 import com.noted.backend.repository.NoteRepository;
 import com.noted.backend.service.NoteService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,7 +14,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -39,9 +39,16 @@ public class SyncController {
     private final NoteService noteService;
     private final NoteRepository noteRepository;
 
+    // @Valid tren List<SyncBatchItem> validate TUNG PHAN TU (displayName/content,
+    // xem SyncBatchItem.java) - request loi Validation se bi tu choi 400 NGAY TU
+    // DAU (qua GlobalExceptionHandler), khong vao den vong lap ben duoi. Truoc
+    // day DTO nay khong co validation gi (client gui displayName rong/content
+    // null se lot qua, gay loi kho hieu o tang sau) - chi hop ly vi day la du
+    // lieu 100% do client (IndexedDB) tu sinh, malformed item nghia la bug o
+    // client, nen tu choi som ro rang hon la co gang xu ly tung phan.
     @PostMapping("/batch")
     public Map<String, Object> syncBatch(@AuthenticationPrincipal Long userId,
-                                          @RequestBody List<SyncBatchItem> items) {
+                                          @Valid @RequestBody List<SyncBatchItem> items) {
         List<Map<String, Object>> results = new ArrayList<>();
 
         for (SyncBatchItem item : items) {
@@ -66,30 +73,27 @@ public class SyncController {
                     continue;
                 }
 
-                long serverEpochMs = existing.getUpdatedAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-
-                if (item.localUpdatedAtEpochMs() != null && item.localUpdatedAtEpochMs() < serverEpochMs) {
-                    // Server co ban MOI HON (VD da sua tu thiet bi/phien khac trong luc
-                    // item nay con nam cho trong hang doi offline) - thay vi am tham
-                    // BO ban local (nhu truoc day, de lai rui ro nguoi dung khong biet gi
-                    // da bi mat), GIU CA 2 BAN: note server giu nguyen (van la "ban thang"),
-                    // ban local duoc tach thanh 1 note MOI rieng ("ban xung dot") - xem
-                    // NoteServiceImpl.createConflictCopy(). Client se tu xoa item nay khoi
-                    // hang doi offline (status khac "conflict" cu, xem useOfflineSync.ts)
-                    // vi du lieu da duoc luu an toan o note moi, KHONG can retry nua.
+                if (item.baseVersion() != null && item.baseVersion() != existing.getVersion()) {
+                    // Version client cam KHAC version hien tai cua server (VD da sua tu
+                    // thiet bi/phien khac trong luc item nay con nam cho trong hang doi
+                    // offline) - dung "version" (so nguyen tang dan) thay cho so sanh
+                    // timestamp cu, tranh sai lech do dong ho he thong. GIU CA 2 BAN: note
+                    // server giu nguyen (van la "ban thang"), ban local duoc tach thanh 1
+                    // note MOI rieng ("ban xung dot") - xem NoteServiceImpl.createConflictCopy().
+                    // Client se tu xoa item nay khoi hang doi offline (status khac "conflict"
+                    // cu, xem useOfflineSync.ts) vi du lieu da duoc luu an toan o note moi.
                     var conflictCopy = noteService.createConflictCopy(userId, existing.getDisplayName(), item.content());
                     results.add(Map.of(
                             "noteId", item.noteId(),
                             "status", "conflict_kept_both",
-                            "serverUpdatedAt", existing.getUpdatedAt().toString(),
+                            "serverVersion", existing.getVersion(),
                             "conflictCopyId", conflictCopy.id(),
                             "conflictCopyName", conflictCopy.displayName()
                     ));
                     continue;
                 }
 
-                noteService.updateContent(userId, item.noteId(),
-                        new UpdateContentRequest(item.content(), item.localUpdatedAtEpochMs()));
+                noteService.updateContent(userId, item.noteId(), new UpdateContentRequest(item.content()));
                 results.add(Map.of("noteId", item.noteId(), "status", "synced"));
 
             } catch (Exception e) {

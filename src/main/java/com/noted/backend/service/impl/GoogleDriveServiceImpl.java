@@ -3,12 +3,16 @@ package com.noted.backend.service.impl;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.http.ByteArrayContent;
 import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.services.drive.Drive;
+import com.google.api.services.drive.model.Change;
+import com.google.api.services.drive.model.ChangeList;
 import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 import com.noted.backend.domain.entity.User;
+import com.noted.backend.exception.DriveFileNotFoundException;
 import com.noted.backend.exception.GoogleDriveOperationException;
 import com.noted.backend.service.GoogleDriveService;
 import com.noted.backend.util.CryptoUtil;
@@ -172,6 +176,18 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             // trung File ID": moi note giu 1 fileId co dinh, luon update()
             // dung fileId do).
             drive.files().update(fileId, meta, fileContent).execute();
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() == 404) {
+                // File da bi xoa/khong con ton tai tren Drive (VD nguoi dung tu
+                // xoa truc tiep tren Drive, khong qua app) - day la loi VINH VIEN
+                // doi voi fileId nay, KHAC voi loi tam thoi thong thuong. Nem
+                // rieng de nguoi goi (DriveSyncServiceImpl) biet ma xoa fileId cu
+                // va upload lai thanh file MOI, thay vi retry vo ich mai mai.
+                log.warn("Cap nhat file Drive (id={}) that bai - file khong con ton tai (404)", fileId);
+                throw new DriveFileNotFoundException(fileId, e);
+            }
+            log.warn("Cap nhat file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the cap nhat file tren Google Drive (id=" + fileId + ")", e);
         } catch (Exception e) {
             log.warn("Cap nhat file Drive (id={}) that bai", fileId, e);
             throw new GoogleDriveOperationException("Khong the cap nhat file tren Google Drive (id=" + fileId + ")", e);
@@ -200,17 +216,7 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             List<DriveFileInfo> infos = new ArrayList<>();
             if (result.getFiles() != null) {
                 for (File f : result.getFiles()) {
-                    String ownerEmail = (f.getOwners() != null && !f.getOwners().isEmpty())
-                            ? f.getOwners().get(0).getEmailAddress()
-                            : null;
-                    infos.add(new DriveFileInfo(
-                            f.getId(),
-                            f.getName(),
-                            f.getSize(),
-                            f.getModifiedTime() != null ? f.getModifiedTime().toStringRfc3339() : null,
-                            ownerEmail,
-                            f.getMimeType()
-                    ));
+                    infos.add(toDriveFileInfo(f));
                 }
             }
             return infos;
@@ -218,6 +224,81 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             log.warn("List file trong folder Drive '{}' that bai", folderId, e);
             throw new GoogleDriveOperationException("Khong the lay danh sach file tu Google Drive", e);
         }
+    }
+
+    @Override
+    public String getStartPageToken(Drive drive) {
+        // Goi 1 LAN duy nhat luc bootstrap incremental sync - xem javadoc
+        // interface ve ly do PHAI full-listing TRUOC roi moi goi ham nay.
+        try {
+            return drive.changes().getStartPageToken().execute().getStartPageToken();
+        } catch (Exception e) {
+            log.warn("Lay start page token cho Drive Changes API that bai", e);
+            throw new GoogleDriveOperationException("Khong the khoi tao incremental sync voi Google Drive", e);
+        }
+    }
+
+    @Override
+    public ChangesResult listChanges(Drive drive, String pageToken) {
+        if (!StringUtils.hasText(pageToken)) {
+            throw new IllegalArgumentException("pageToken khong duoc de trong khi lay danh sach thay doi");
+        }
+
+        try {
+            List<DriveFileInfo> changedFiles = new ArrayList<>();
+            List<String> removedFileIds = new ArrayList<>();
+            String currentToken = pageToken;
+            String newStartPageToken = null;
+
+            // changes.list() co the tra ve NHIEU TRANG (nextPageToken) neu co
+            // qua nhieu thay doi tich luy tu lan pull truoc - lap cho den khi
+            // het trang. Google CHI tra ve "newStartPageToken" o TRANG CUOI
+            // CUNG - danh dau da quet het, dung lam token cho lan goi ke tiep.
+            do {
+                ChangeList result = drive.changes().list(currentToken)
+                        .setSpaces("drive")
+                        .setFields("nextPageToken, newStartPageToken, "
+                                + "changes(fileId, removed, file(id, name, size, modifiedTime, owners, mimeType))")
+                        .execute();
+
+                if (result.getChanges() != null) {
+                    for (Change change : result.getChanges()) {
+                        // "removed"=true HOAC file()=null (Drive khong con tra
+                        // ve metadata) deu nghia la file da bi xoa/mat quyen -
+                        // KHONG con gi de doi chieu ngoai fileId.
+                        if (Boolean.TRUE.equals(change.getRemoved()) || change.getFile() == null) {
+                            removedFileIds.add(change.getFileId());
+                        } else {
+                            changedFiles.add(toDriveFileInfo(change.getFile()));
+                        }
+                    }
+                }
+
+                currentToken = result.getNextPageToken();
+                if (result.getNewStartPageToken() != null) {
+                    newStartPageToken = result.getNewStartPageToken();
+                }
+            } while (currentToken != null);
+
+            return new ChangesResult(changedFiles, removedFileIds, newStartPageToken);
+        } catch (Exception e) {
+            log.warn("Lay danh sach thay doi tu Drive Changes API that bai (pageToken={})", pageToken, e);
+            throw new GoogleDriveOperationException("Khong the lay danh sach thay doi tu Google Drive", e);
+        }
+    }
+
+    private DriveFileInfo toDriveFileInfo(File f) {
+        String ownerEmail = (f.getOwners() != null && !f.getOwners().isEmpty())
+                ? f.getOwners().get(0).getEmailAddress()
+                : null;
+        return new DriveFileInfo(
+                f.getId(),
+                f.getName(),
+                f.getSize(),
+                f.getModifiedTime() != null ? f.getModifiedTime().toStringRfc3339() : null,
+                ownerEmail,
+                f.getMimeType()
+        );
     }
 
     @Override

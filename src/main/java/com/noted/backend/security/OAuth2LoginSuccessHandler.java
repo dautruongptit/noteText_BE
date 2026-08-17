@@ -39,7 +39,7 @@ public class OAuth2LoginSuccessHandler extends SimpleUrlAuthenticationSuccessHan
     private final RefreshTokenService refreshTokenService;
     private final CookieUtil cookieUtil;
 
-    @Value("${app.frontend-redirect-url:http://localhost:5175/oauth/callback}")
+    @Value("${app.frontend-redirect-url:http://localhost:8445/oauth/callback}")
     private String frontendRedirectUrl;
 
     @Override

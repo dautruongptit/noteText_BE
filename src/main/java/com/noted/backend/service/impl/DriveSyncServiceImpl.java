@@ -4,15 +4,19 @@ import com.google.api.services.drive.Drive;
 import com.noted.backend.domain.entity.Note;
 import com.noted.backend.domain.entity.User;
 import com.noted.backend.domain.enums.SyncState;
+import com.noted.backend.exception.DriveFileNotFoundException;
 import com.noted.backend.repository.NoteRepository;
 import com.noted.backend.repository.UserRepository;
 import com.noted.backend.service.DriveSyncService;
 import com.noted.backend.service.FileStorageService;
 import com.noted.backend.service.GoogleDriveService;
+import com.noted.backend.service.NoteService;
 import com.noted.backend.util.HashUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -68,6 +72,27 @@ import java.util.concurrent.ConcurrentHashMap;
  * FIX rang buoc dong thoi (tu bao loi thuc te ve file bi double): khoa trong
  * bo nho (syncingNoteIds) chan 2 lenh syncNote() chay dong thoi cho CUNG 1
  * noteId (VD debounce job va flush thu cong trung nhau).
+ *
+ * ===== FIX quan trong: self-invocation lam @Async/@Transactional cua
+ * syncNote() KHONG BAO GIO co hieu luc (bug tim thay khi review, da sua) =====
+ * Spring AOP (proxy-based, mac dinh) CHI intercept duoc method call di QUA
+ * PROXY - goi noi bo kieu "this.syncNote(...)" (hoac chi "syncNote(...)" bo
+ * qua hoan toan @Async/@Transactional RIENG cua syncNote(). Truoc day
+ * runDebouncedSyncBatch()/flushDirtyNotes() goi thang "syncNote(...)" (self-
+ * invocation) - ket qua: syncNote() chay DONG BO, tren CUNG transaction
+ * readOnly=true cua ham goi. Hibernate coi entity trong session readOnly la
+ * "read-only" (bo qua dirty-checking khi flush) - moi thay doi note.driveFileId/
+ * dirty/syncState BI ROI RA khoi memory, KHONG BAO GIO duoc ghi xuong DB, du
+ * Drive API upload THAT SU thanh cong. Hau qua: note KHONG BAO GIO duoc danh
+ * dau da sync, moi lan debounce quet lai deu thay driveFileId=null -> upload
+ * lai thanh 1 file HOAN TOAN MOI tren Drive - rac file trung tich luy vo han.
+ *
+ * Fix: tiem 1 THAM CHIEU CHINH BEAN NAY qua proxy (truong "self", @Lazy de
+ * tranh loi khoi tao vong tron luc Spring dung bean). Goi "self.syncNote(...)"
+ * thay vi "syncNote(...)" - luc nay method call THAT SU di qua proxy, @Async
+ * chay tren thread rieng (khong con transaction nao duoc ke thua tu ham goi),
+ * @Transactional cua syncNote() tu mo 1 transaction MOI (khong readOnly) -
+ * dung nhu thiet ke ban dau.
  */
 @Service
 @RequiredArgsConstructor
@@ -78,6 +103,16 @@ public class DriveSyncServiceImpl implements DriveSyncService {
     private final UserRepository userRepository;
     private final FileStorageService fileStorageService;
     private final GoogleDriveService googleDriveService;
+    // Dung cho mat tran B (conflict Drive-vs-local-dirty, xem pullOneFile()) -
+    // tach ban Drive thanh 1 note rieng qua co che "giu ca 2 ban" da co san.
+    private final NoteService noteService;
+
+    // Xem giai thich chi tiet o javadoc class phia tren - BAT BUOC @Lazy vi
+    // day la tham chieu VONG TRON (bean tu tiem chinh no) - khong co @Lazy,
+    // Spring se nem BeanCurrentlyInCreationException luc khoi tao.
+    @Lazy
+    @Autowired
+    private DriveSyncService self;
 
     // Khoa trong bo nho: chan 2 lenh syncNote() chay dong thoi cho CUNG 1
     // noteId. Chi hoat dong dung tren 1 INSTANCE backend duy nhat (dung quy
@@ -142,27 +177,22 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         Note note = noteRepository.findById(noteId).orElse(null);
         if (note == null || note.isDeleted()) return;
 
+        Drive drive = null;
+        String folderId = null;
+        String content = null;
+
         try {
             User user = userRepository.findById(note.getUserId()).orElseThrow();
             if (!user.isDriveConnected()) {
                 return; // nguoi dung chua ket noi Drive, khong co gi de lam
             }
 
-            String folderId = ensureAppFolder(user.getId());
-            Drive drive = googleDriveService.buildClient(user);
-            String content = fileStorageService.read(note.getFilePath());
+            folderId = ensureAppFolder(user.getId());
+            drive = googleDriveService.buildClient(user);
+            content = fileStorageService.read(note.getFilePath());
 
             if (note.getDriveFileId() == null) {
-                // CHIEU NGUOC LAI (upload file), dung 4 buoc yeu cau:
-                // 1. Kiem tra folder ton tai -> da co folderId tu ensureAppFolder() o tren
-                // 2. Lay googleFolderId -> chinh la "folderId" bien o tren
-                // 3. Upload file vao folder do -> googleDriveService.uploadFile()
-                // 4. Nhan googleFileId, luu vao DB (note.driveFileId)
-                //
-                // LUON tao file MOI (khong tim theo ten) - dung nghiep vu da
-                // chot: cho phep trung ten tren Drive, chi driveFileId can duy nhat.
-                GoogleDriveService.UploadResult result = googleDriveService.uploadFile(drive, folderId, note.getDisplayName(), content);
-                note.setDriveFileId(result.fileId());
+                uploadAsNewFile(note, drive, folderId, content);
             } else {
                 // Note DA CO driveFileId - toi uu bang md5Checksum TRUOC KHI
                 // update(): neu noi dung local KHOP HOAN TOAN voi noi dung
@@ -174,28 +204,74 @@ public class DriveSyncServiceImpl implements DriveSyncService {
                     log.debug("Note {} noi dung khop md5Checksum voi Drive, bo qua update() thua", noteId);
                 } else {
                     // LUON update() dung fileId co san, KHONG BAO GIO tao file
-                    // moi cho note da co driveFileId.
+                    // moi cho note da co driveFileId - TRU KHI fileId do khong
+                    // con ton tai nua (xem catch DriveFileNotFoundException duoi).
                     googleDriveService.updateFile(drive, note.getDriveFileId(), note.getDisplayName(), content);
                 }
             }
 
-            note.setSyncState(SyncState.SYNCED);
-            note.setDirty(false); // da day len Drive thanh cong -> het dirty
-            note.setDriveSyncedAt(LocalDateTime.now());
-            note.setDriveSyncAttempts(0);
-            note.setDriveSyncError(null);
+            markSynced(note, content);
+
+        } catch (DriveFileNotFoundException e) {
+            // File GOC tren Drive khong con ton tai nua (VD nguoi dung tu xoa
+            // truc tiep tren Drive, khong qua app) - day la loi VINH VIEN cho
+            // fileId nay, retry lai voi CUNG fileId se THAT BAI MAI MAI. Xoa
+            // driveFileId cu (coi note nhu "chua tung sync") roi upload lai
+            // NGAY thanh 1 file HOAN TOAN MOI trong cung 1 lan goi nay - khong
+            // can doi them 1 chu ky debounce nua nguoi dung moi thay ket qua.
+            log.warn("Note {} tro toi file Drive da bi xoa - upload lai ngay thanh file moi", noteId);
+            note.setDriveFileId(null);
+            try {
+                if (drive == null || folderId == null || content == null) {
+                    throw new IllegalStateException("Thieu du lieu can thiet (drive/folderId/content) de upload lai", e);
+                }
+                uploadAsNewFile(note, drive, folderId, content);
+                markSynced(note, content);
+            } catch (Exception retryEx) {
+                markFailed(note, retryEx);
+            }
 
         } catch (Exception e) {
-            log.warn("Sync Drive that bai cho note {}: {}", noteId, e.getMessage());
-            note.setDriveSyncAttempts(note.getDriveSyncAttempts() + 1);
-            note.setDriveSyncError(truncate(e.getMessage(), 500));
-            note.setSyncState(note.getDriveSyncAttempts() >= maxAttempts
-                    ? SyncState.DRIVE_FAILED
-                    : SyncState.PENDING_DRIVE);
-            // dirty VAN GIU true (khong tat) - de con duoc thu lai o lan debounce/flush ke tiep
+            markFailed(note, e);
         }
 
         noteRepository.save(note);
+    }
+
+    private void uploadAsNewFile(Note note, Drive drive, String folderId, String content) {
+        // CHIEU NGUOC LAI (upload file), dung 4 buoc yeu cau:
+        // 1. Kiem tra folder ton tai -> da co folderId tu ensureAppFolder() o tren
+        // 2. Lay googleFolderId -> chinh la "folderId" tham so o day
+        // 3. Upload file vao folder do -> googleDriveService.uploadFile()
+        // 4. Nhan googleFileId, luu vao DB (note.driveFileId)
+        //
+        // LUON tao file MOI (khong tim theo ten) - dung nghiep vu da chot: cho
+        // phep trung ten tren Drive, chi driveFileId can duy nhat.
+        GoogleDriveService.UploadResult result = googleDriveService.uploadFile(drive, folderId, note.getDisplayName(), content);
+        note.setDriveFileId(result.fileId());
+    }
+
+    private void markSynced(Note note, String content) {
+        note.setSyncState(SyncState.SYNCED);
+        note.setDirty(false); // da day len Drive thanh cong -> het dirty
+        note.setDriveSyncedAt(LocalDateTime.now());
+        note.setDriveSyncAttempts(0);
+        note.setDriveSyncError(null);
+        // Snapshot MD5 cua noi dung VUA duoc xac nhan khop voi Drive (du la do
+        // vua upload/update(), hay do md5Checksum da khop san tu truoc) - dung
+        // lam "baseline" cho pullOneFile() phat hien conflict THAT SU (mat tran
+        // B), phan biet voi truong hop local chi don gian dang co sua chua push.
+        note.setDriveSyncedContentHash(HashUtil.md5(content));
+    }
+
+    private void markFailed(Note note, Exception e) {
+        log.warn("Sync Drive that bai cho note {}: {}", note.getId(), e.getMessage());
+        note.setDriveSyncAttempts(note.getDriveSyncAttempts() + 1);
+        note.setDriveSyncError(truncate(e.getMessage(), 500));
+        note.setSyncState(note.getDriveSyncAttempts() >= maxAttempts
+                ? SyncState.DRIVE_FAILED
+                : SyncState.PENDING_DRIVE);
+        // dirty VAN GIU true (khong tat) - de con duoc thu lai o lan debounce/flush ke tiep
     }
 
     @Override
@@ -206,7 +282,9 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         List<Note> idleDirtyNotes = noteRepository.findTop50ByDirtyTrueAndDeletedFalseAndUpdatedAtBefore(idleBefore);
 
         for (Note note : idleDirtyNotes) {
-            syncNote(note.getId()); // moi call chay async (@Async), khong block vong lap
+            // Goi QUA "self" (proxy), KHONG goi thang "syncNote(...)" - xem
+            // javadoc class ve ly do self-invocation lam @Async mat tac dung.
+            self.syncNote(note.getId());
         }
     }
 
@@ -219,7 +297,7 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         List<Note> dirtyNotes = noteRepository.findByDirtyTrueAndDeletedFalseAndUserId(userId);
 
         for (Note note : dirtyNotes) {
-            syncNote(note.getId());
+            self.syncNote(note.getId());
         }
     }
 
@@ -233,8 +311,23 @@ public class DriveSyncServiceImpl implements DriveSyncService {
 
         String folderId = ensureAppFolder(userId);
         Drive drive = googleDriveService.buildClient(user);
-        List<GoogleDriveService.DriveFileInfo> driveFiles = googleDriveService.listFilesInFolder(drive, folderId);
 
+        if (user.getDriveChangesPageToken() == null) {
+            bootstrapPull(userId, user, drive, folderId);
+        } else {
+            incrementalPull(userId, user, drive);
+        }
+    }
+
+    /**
+     * Lan pull DAU TIEN (chua co page token luu san) - quet TOAN BO folder
+     * nhu truoc day, roi lay "start page token" NGAY SAU DO de bat dau theo
+     * doi incremental tu diem nay tro di. Thu tu quan trong: phai full-listing
+     * TRUOC roi moi lay start token SAU - neu lam nguoc lai, thay doi xay ra
+     * giua 2 buoc co the bi bo lot (khong nam trong ca 2 nguon).
+     */
+    private void bootstrapPull(Long userId, User user, Drive drive, String folderId) {
+        List<GoogleDriveService.DriveFileInfo> driveFiles = googleDriveService.listFilesInFolder(drive, folderId);
         for (GoogleDriveService.DriveFileInfo driveFile : driveFiles) {
             try {
                 pullOneFile(userId, drive, driveFile);
@@ -245,6 +338,60 @@ public class DriveSyncServiceImpl implements DriveSyncService {
                 log.warn("Pull file Drive (id={}, name={}) that bai cho userId={}",
                         driveFile.id(), driveFile.name(), userId, e);
             }
+        }
+
+        try {
+            user.setDriveChangesPageToken(googleDriveService.getStartPageToken(drive));
+            userRepository.save(user);
+        } catch (Exception e) {
+            // Khong lay duoc start token - KHONG sao, giu nguyen NULL, lan
+            // pullFromDrive() ke tiep se tu dong bootstrap lai (full-listing),
+            // chi cham hon chu khong mat du lieu gi.
+            log.warn("Lay start page token cho userId={} that bai, se bootstrap lai o lan pull ke tiep", userId, e);
+        }
+    }
+
+    /**
+     * Cac lan pull TIEP THEO (da co page token) - CHI hoi Drive "gi da doi tu
+     * lan truoc", khong quet lai toan bo folder. Quan trong cho hieu nang khi
+     * so luong note lon (xem so sanh voi OneDrive/Google Drive desktop client).
+     */
+    private void incrementalPull(Long userId, User user, Drive drive) {
+        GoogleDriveService.ChangesResult changes;
+        try {
+            changes = googleDriveService.listChanges(drive, user.getDriveChangesPageToken());
+        } catch (Exception e) {
+            // Ca lan goi changes.list() that bai (VD token het han/khong con
+            // hop le phia Google) - KHONG throw tiep, giu nguyen token cu, thu
+            // lai o lan sau. Neu token thuc su da "chet" vinh vien, nguoi dung
+            // se thay note khong cap nhat tu Drive nua - chap nhan duoc, an
+            // toan hon la crash ca luong "Dong bo ngay".
+            log.warn("Lay danh sach thay doi (Drive Changes API) that bai cho userId={}, giu nguyen token cu", userId, e);
+            return;
+        }
+
+        for (GoogleDriveService.DriveFileInfo driveFile : changes.changedFiles()) {
+            try {
+                pullOneFile(userId, drive, driveFile);
+            } catch (Exception e) {
+                log.warn("Pull file Drive (id={}, name={}) that bai cho userId={}",
+                        driveFile.id(), driveFile.name(), userId, e);
+            }
+        }
+
+        // File bi xoa/mat quyen truy cap tren Drive: CHUA xu ly tu dong xoa
+        // note tuong ung o Noted (khac voi hanh vi full-listing cu, von cung
+        // KHONG BAO GIO tu dong xoa note khi file bien mat khoi danh sach) -
+        // giu nguyen tinh nhat quan, chi log lai de biet. Neu sau nay muon
+        // "Drive xoa -> Noted xoa theo", day la diem can mo rong.
+        if (!changes.removedFileIds().isEmpty()) {
+            log.debug("Drive bao {} file bi xoa/mat quyen cho userId={} (chua tu dong xoa note tuong ung): {}",
+                    changes.removedFileIds().size(), userId, changes.removedFileIds());
+        }
+
+        if (changes.newPageToken() != null) {
+            user.setDriveChangesPageToken(changes.newPageToken());
+            userRepository.save(user);
         }
     }
 
@@ -271,20 +418,40 @@ public class DriveSyncServiceImpl implements DriveSyncService {
             created.setContentSizeBytes(bytesWritten);
             created.setContentHash(HashUtil.sha256(content));
             created.setDriveSyncedAt(LocalDateTime.now());
+            created.setDriveSyncedContentHash(HashUtil.md5(content)); // baseline cho mat tran B ngay tu dau
 
             noteRepository.save(created);
             return;
         }
 
-        if (note.isDeleted() || note.isDirty()) {
-            // Da xoa o local (cho purge - khong can pull ve nua), HOAC dang co
-            // thay doi local CHUA kip day len Drive - KHONG ghi de, tranh mat
-            // du lieu local. Lan sync ke tiep se push xong (het dirty) roi moi
-            // doi chieu pull lai note nay.
-            return;
+        if (note.isDeleted()) {
+            return; // cho purge - khong can pull ve nua
         }
 
         String remoteMd5 = googleDriveService.getFileChecksum(drive, driveFile.id());
+
+        if (note.isDirty()) {
+            // Local dang co sua CHUA kip day len Drive. Truoc day: luon BO QUA
+            // pull o day (an toan nhung "mu" - khong biet Drive co THAT SU doi
+            // gi khong). Mat tran B: so remoteMd5 voi "driveSyncedContentHash"
+            // (baseline MD5 tai lan sync THANH CONG gan nhat, xem syncNoteInternal) -
+            // neu Drive VAN khop baseline, khong co gi moi tren Drive de mat ca,
+            // cu de push binh thuong o lan debounce ke tiep (nhu truoc). Neu
+            // Drive DA KHAC baseline -> Drive cung doi DOC LAP trong luc local
+            // dang dirty -> CONFLICT THAT: giu local (dang active o may nay)
+            // lam ban chinh (tiep tuc push binh thuong), tach ban Drive thanh 1
+            // note rieng qua co che "giu ca 2 ban" da co (createConflictCopy).
+            boolean driveChangedIndependently = remoteMd5 != null
+                    && note.getDriveSyncedContentHash() != null
+                    && !remoteMd5.equalsIgnoreCase(note.getDriveSyncedContentHash());
+            if (!driveChangedIndependently) return;
+
+            String driveContent = googleDriveService.downloadFileContent(drive, driveFile.id());
+            noteService.createConflictCopy(userId, note.getDisplayName(), driveContent);
+            log.info("Phat hien conflict Drive-vs-local-dirty cho note {} - da tach ban Drive thanh note rieng", note.getId());
+            return;
+        }
+
         String localMd5 = HashUtil.md5(fileStorageService.read(note.getFilePath()));
         if (remoteMd5 != null && remoteMd5.equalsIgnoreCase(localMd5)) {
             return; // noi dung khop nhau, khong co gi moi de pull ve
@@ -301,6 +468,7 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         note.setDriveSyncedAt(LocalDateTime.now());
         note.setDriveSyncAttempts(0);
         note.setDriveSyncError(null);
+        note.setDriveSyncedContentHash(remoteMd5); // cap nhat baseline cho mat tran B
         noteRepository.save(note);
     }
 
@@ -311,6 +479,10 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         user.setDriveConnected(false);
         user.setDriveFolderId(null);
         user.setDriveRefreshTokenEnc(null);
+        // Reset page token - lan connect lai sau nay (folder/token moi hoan
+        // toan phia Google) phai bootstrap lai tu dau (full-listing), khong
+        // the tiep tuc dung token cu (co the da het han hoac tro sai ngu canh).
+        user.setDriveChangesPageToken(null);
         userRepository.save(user);
     }
 

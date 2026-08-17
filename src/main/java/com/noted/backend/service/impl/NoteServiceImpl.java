@@ -83,6 +83,7 @@ public class NoteServiceImpl implements NoteService {
             note.setSyncState(SyncState.PENDING_DRIVE);
             note.setDirty(true);
             note.setDriveSyncAttempts(0);
+            note.setVersion(note.getVersion() + 1); // noi dung note CU thay doi -> tang version
             note = noteRepository.save(note);
             return NoteDetailResponse.of(note, content);
         }
@@ -110,6 +111,12 @@ public class NoteServiceImpl implements NoteService {
         note.setSyncState(SyncState.PENDING_DRIVE); // moi thay doi -> can day len Drive lai
         note.setDirty(true); // "Auto Save vao DB" xong -> danh dau dirty, cho Debounce Sync xu ly rieng
         note.setDriveSyncAttempts(0);
+        // Tang version o day - CHU Y: route nay (autosave dang go song, PATCH
+        // /content) KHONG kiem tra baseVersion, LUON ghi de (phuong an 2, xem
+        // cuoc thao luan ve version-based conflict) - phien dang go duoc uu
+        // tien hon. Version van duoc tang DUNG DAN de /api/sync/batch (mat
+        // tran A, offline reconciliation) so sanh chinh xac sau nay.
+        note.setVersion(note.getVersion() + 1);
         note = noteRepository.save(note);
 
         return NoteDetailResponse.of(note, request.content());
@@ -139,6 +146,7 @@ public class NoteServiceImpl implements NoteService {
             target.setSyncState(SyncState.PENDING_DRIVE);
             target.setDirty(true);
             target.setDriveSyncAttempts(0);
+            target.setVersion(target.getVersion() + 1);
             target = noteRepository.save(target);
 
             note.setDeleted(true);
@@ -154,6 +162,7 @@ public class NoteServiceImpl implements NoteService {
         // Ten hien thi cung la ten file tren Drive (xem GoogleDriveService.updateFile) -
         // doi ten cung can day len Drive lai, danh dau dirty tuong tu doi content.
         note.setDirty(true);
+        note.setVersion(note.getVersion() + 1); // doi ten cung la 1 lan "ghi" - client cam baseVersion cu can biet
         note = noteRepository.save(note);
 
         return NoteSummaryResponse.from(note);

@@ -27,7 +27,7 @@ class GoogleTokenExchangeServiceImplTest {
         };
         ReflectionTestUtils.setField(service, "clientId", "fake-client-id");
         ReflectionTestUtils.setField(service, "clientSecret", "fake-client-secret");
-        ReflectionTestUtils.setField(service, "redirectUri", "http://localhost:8085/api/drive/callback");
+        ReflectionTestUtils.setField(service, "redirectUri", "http://localhost:8084/api/drive/callback");
         return service;
     }
 
@@ -40,7 +40,7 @@ class GoogleTokenExchangeServiceImplTest {
         };
         ReflectionTestUtils.setField(service, "clientId", "fake-client-id");
         ReflectionTestUtils.setField(service, "clientSecret", "fake-client-secret");
-        ReflectionTestUtils.setField(service, "redirectUri", "http://localhost:8085/api/drive/callback");
+        ReflectionTestUtils.setField(service, "redirectUri", "http://localhost:8084/api/drive/callback");
         return service;
     }
 

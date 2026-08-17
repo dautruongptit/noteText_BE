@@ -33,6 +33,16 @@ public interface GoogleDriveService {
 
     record UploadResult(String fileId) {}
 
+    /**
+     * Ket qua 1 lan goi Drive Changes API (incremental sync, xem
+     * DriveSyncServiceImpl.pullFromDrive()) - "changedFiles" la cac file
+     * CON TON TAI va vua thay doi/tao moi, "removedFileIds" la cac fileId da
+     * bi xoa/mat quyen truy cap (KHONG kem metadata, Drive khong tra ve nua).
+     * "newPageToken" phai duoc luu lai (User.driveChangesPageToken) de dung
+     * cho lan goi TIEP THEO.
+     */
+    record ChangesResult(List<DriveFileInfo> changedFiles, List<String> removedFileIds, String newPageToken) {}
+
     /** Dung refresh_token da ma hoa cua user (User.driveRefreshTokenEnc) de dung Drive client that su goi API */
     Drive buildClient(User user);
 
@@ -76,6 +86,24 @@ public interface GoogleDriveService {
 
     /** List toan bo file trong 1 folder, kem metadata day du (size/modifiedTime/owner/mimeType) */
     List<DriveFileInfo> listFilesInFolder(Drive drive, String folderId);
+
+    /**
+     * Lay page token KHOI DIEM cho Drive Changes API - goi 1 LAN duy nhat luc
+     * "bootstrap" (lan pullFromDrive() dau tien, chua co token luu san), TRUOC
+     * khi bat dau theo doi incremental. Cac thay doi xay ra TRUOC thoi diem
+     * goi ham nay se KHONG xuat hien trong changes.list() sau do - vi vay
+     * phai lam full-listing (listFilesInFolder) TRUOC, roi moi goi ham nay,
+     * dam bao khong bo lot file nao dang co san luc bootstrap.
+     */
+    String getStartPageToken(Drive drive);
+
+    /**
+     * Lay danh sach thay doi tren TOAN BO Drive ke tu "pageToken" (dung cho
+     * incremental sync). Vi scope OAuth la "drive.file" (app chi thay duoc
+     * file CHINH NO tao ra), ket qua tu nhien da gioi han trong pham vi file
+     * cua Noted, khong can loc them theo folder o tang nay.
+     */
+    ChangesResult listChanges(Drive drive, String pageToken);
 
     /**
      * Tai NOI DUNG THAT SU cua 1 file tren Drive ve (dung cho luong PULL -

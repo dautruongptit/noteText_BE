@@ -9,5 +9,5 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 RUN mkdir -p /data/noted/notes
-EXPOSE 8085
+EXPOSE 8084
 ENTRYPOINT ["java", "-jar", "app.jar"]

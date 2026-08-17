@@ -3,6 +3,7 @@ package com.noted.backend.event;
 import com.noted.backend.service.DriveSyncService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -35,7 +36,19 @@ public class NoteSyncEventListener {
      * 30 ngay den luc purge job chay - xem NoteDeletedEvent.java). deleteFromDrive()
      * ban than da la best-effort (khong throw), nhung van bao ve them 1 lop o
      * day cho chac chan khong bao gio anh huong den viec xoa note chinh.
+     *
+     * @Async (them khi review): truoc day listener nay chay DONG BO ngay tren
+     * thread request (mac dinh cua @TransactionalEventListener) - xoa 1 note
+     * co Drive phai doi xong round-trip Drive API moi tra response; bulkDelete()
+     * publish N event thi request phai doi ca N round-trip TUAN TU. Voi @Async,
+     * moi loi goi listener nay chay tren thread rieng, response tra ve ngay
+     * sau khi transaction xoa note commit xong - khong con phai doi Drive nua.
+     * LUU Y: khong dinh phai self-invocation nhu bug syncNote() (xem
+     * DriveSyncServiceImpl) - Spring goi listener nay qua co che event dispatch
+     * CUA CHINH NO (khong phai "this.onNoteDeleted()"), luon di qua proxy binh
+     * thuong nen @Async o day co hieu luc dung ngay tu dau.
      */
+    @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onNoteDeleted(NoteDeletedEvent event) {
         try {

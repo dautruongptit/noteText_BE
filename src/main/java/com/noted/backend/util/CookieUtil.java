@@ -17,7 +17,7 @@ import org.springframework.util.StringUtils;
  *  - Path=/api/auth   : cookie CHI duoc gui kem khi goi toi /api/auth/** (VD refresh,
  *                        logout), KHONG gui kem o moi request khac -> giam dien tan
  *                        cong (attack surface) neu co CSRF o endpoint khac
- *  - SameSite=None    : BAT BUOC vi backend (port 8085) va frontend (port 85,
+ *  - SameSite=None    : BAT BUOC vi backend (port 8084) va frontend (port 85,
  *                        chay sau nginx reverse proxy) khac
  *                        origin - can Secure=true di kem (yeu cau HTTPS) tru khi dev local
  *  - Secure            : bat theo profile (tat o dev local http, bat o production https)

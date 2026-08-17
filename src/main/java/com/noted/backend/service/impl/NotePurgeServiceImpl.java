@@ -44,6 +44,34 @@ public class NotePurgeServiceImpl implements NotePurgeService {
     @Transactional
     public void purgeExpiredNotes() {
         LocalDateTime threshold = LocalDateTime.now().minusDays(purgeAfterDays);
+        // Top100/lan chay, giong pattern da dung o cac job Drive sync - tranh 1
+        // lan quet load qua nhieu row cung luc (xem NoteRepository).
+        List<Note> expired = noteRepository.findTop100ByDeletedTrueAndDeletedAtBefore(threshold);
+        if (expired.isEmpty()) return;
 
+        for (Note note : expired) {
+            // File vat ly: xoa THAT SU, best-effort - 1 file loi (VD da bi xoa
+            // tay tren disk tu truoc, quyen truy cap...) KHONG duoc chan viec
+            // xoa DB record cua CHINH note do lan cac note con lai trong batch.
+            try {
+                fileStorageService.delete(note.getFilePath());
+            } catch (Exception e) {
+                log.warn("Xoa file vat ly that bai luc purge cho note id={} (path={}), van tiep tuc xoa DB record",
+                        note.getId(), note.getFilePath(), e);
+            }
+
+            // Ban tren Drive: da duoc xoa GAN NHU NGAY LAP TUC luc soft-delete
+            // qua NoteDeletedEvent/NoteSyncEventListener (xem javadoc class) -
+            // nhung do la best-effort, co the da that bai tam thoi luc do (VD
+            // mat mang/token het han). Day la LUOI AN TOAN DU PHONG CUOI CUNG -
+            // sau khi xoa DB record se KHONG CON driveFileId nao de biet ma
+            // don nua, nen thu lai 1 lan NUA o day truoc khi qua muon.
+            if (note.getDriveFileId() != null) {
+                driveSyncService.deleteFromDrive(note.getId());
+            }
+        }
+
+        noteRepository.deleteAll(expired);
+        log.info("Purge job: da xoa vinh vien {} note qua han giu lai ({} ngay)", expired.size(), purgeAfterDays);
     }
 }

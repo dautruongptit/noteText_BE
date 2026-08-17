@@ -10,7 +10,8 @@ public record NoteSummaryResponse(
         String displayName,
         String syncState,
         LocalDateTime updatedAt,
-        boolean conflictCopy
+        boolean conflictCopy,
+        int version
 ) {
     public static NoteSummaryResponse from(Note note) {
         return new NoteSummaryResponse(
@@ -18,7 +19,8 @@ public record NoteSummaryResponse(
                 note.getDisplayName(),
                 note.getSyncState().name(),
                 note.getUpdatedAt(),
-                note.isConflictCopy()
+                note.isConflictCopy(),
+                note.getVersion()
         );
     }
 }

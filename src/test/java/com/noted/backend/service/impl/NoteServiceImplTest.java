@@ -4,6 +4,7 @@ import com.noted.backend.domain.entity.Note;
 import com.noted.backend.domain.enums.SyncState;
 import com.noted.backend.dto.request.CreateNoteRequest;
 import com.noted.backend.dto.request.RenameNoteRequest;
+import com.noted.backend.dto.request.UpdateContentRequest;
 import com.noted.backend.dto.response.BulkDeleteResponse;
 import com.noted.backend.dto.response.NoteDetailResponse;
 import com.noted.backend.dto.response.NoteSummaryResponse;
@@ -91,6 +92,9 @@ class NoteServiceImplTest {
         verify(fileStorageService).writeAtomic(anyString(), eq("noi dung moi"));
         assertThat(existingNote.isDirty()).isTrue();
         assertThat(existingNote.getSyncState()).isEqualTo(SyncState.PENDING_DRIVE);
+        // Ghi de = 1 lan "ghi" that su -> version phai tang, de client cam
+        // baseVersion cu (truoc khi bi ghi de) tu phat hien lech o lan sync sau
+        assertThat(existingNote.getVersion()).isEqualTo(2);
     }
 
     @Test
@@ -110,6 +114,7 @@ class NoteServiceImplTest {
         assertThat(result.id()).isEqualTo(9L);
         verify(fileStorageService).writeAtomic(target.getFilePath(), "noi dung cua Draft");
         assertThat(target.isDirty()).isTrue();
+        assertThat(target.getVersion()).isEqualTo(2); // note dich vua bi ghi de -> tang version
         // Note nguon bi xoa mem, KHONG xoa cung - va Drive cua no duoc don ngay qua event
         assertThat(source.isDeleted()).isTrue();
         assertThat(source.getDeletedAt()).isNotNull();
@@ -134,6 +139,7 @@ class NoteServiceImplTest {
         assertThat(result.displayName()).isEqualTo("Final.txt");
         verify(fileStorageService, never()).writeAtomic(anyString(), anyString());
         verifyNoInteractions(eventPublisher);
+        assertThat(note.getVersion()).isEqualTo(2); // doi ten cung la 1 lan "ghi" -> tang version
     }
 
     // ---------- 2b. "Giu ca 2 ban khi conflict" (SyncController.syncBatch) ----------
@@ -156,10 +162,30 @@ class NoteServiceImplTest {
         // tranh rui ro mojibake o moi tang encoding)
         assertThat(result.displayName()).startsWith("Draft (xung dot ");
         assertThat(result.displayName()).endsWith(".txt");
+        assertThat(result.version()).isEqualTo(1); // note MOI hoan toan -> bat dau tu 1
         verify(fileStorageService).writeAtomic(anyString(), eq("noi dung ban local"));
         // Note GOC (Draft.txt that su, id/uuid rieng) khong bi dong den o day -
         // createConflictCopy() CHI nhan ten/noi dung, khong nhan/sua entity nao co san.
         verify(noteRepository, never()).findByIdAndUserIdAndDeletedFalse(anyLong(), anyLong());
+    }
+
+    // ---------- 2c. updateContent() - "phuong an 2": LUON ghi de, khong kiem
+    // tra baseVersion (khac SyncController.syncBatch, noi baseVersion THAT SU
+    // duoc doi chieu) - chi tang version dung de cac noi khac dung sau ----------
+
+    @Test
+    void updateContent_luonGhiDe_khongKiemTraGiCa_vaTangVersion() {
+        Note note = ownedNote(5L, "Draft.txt");
+        when(noteRepository.findByIdAndUserIdAndDeletedFalse(5L, USER_ID)).thenReturn(Optional.of(note));
+        when(noteRepository.save(any(Note.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        NoteDetailResponse result = noteService.updateContent(USER_ID, 5L, new UpdateContentRequest("noi dung moi"));
+
+        assertThat(result.content()).isEqualTo("noi dung moi");
+        assertThat(result.version()).isEqualTo(2); // tu 1 (mac dinh Note moi) len 2
+        verify(fileStorageService).writeAtomic(note.getFilePath(), "noi dung moi");
+        assertThat(note.getSyncState()).isEqualTo(SyncState.PENDING_DRIVE);
+        assertThat(note.isDirty()).isTrue();
     }
 
     // ---------- 3. Note khong ton tai / khong thuoc user ----------

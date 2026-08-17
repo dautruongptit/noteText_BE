@@ -41,6 +41,15 @@ public class User {
     @Column(name = "drive_refresh_token_enc", columnDefinition = "TEXT")
     private String driveRefreshTokenEnc;
 
+    /**
+     * Page token cho Drive Changes API (incremental sync, xem DriveSyncServiceImpl.
+     * pullFromDrive()) - NULL nghia la chua tung pull lan nao, se bootstrap
+     * bang quet toan bo folder (listFilesInFolder) 1 lan roi moi bat dau
+     * theo doi incremental tu do. Reset ve NULL khi disconnect() Drive.
+     */
+    @Column(name = "drive_changes_page_token")
+    private String driveChangesPageToken;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

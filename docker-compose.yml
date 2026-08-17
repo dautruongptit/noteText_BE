@@ -48,9 +48,9 @@ services:
       DB_NAME: ${DB_NAME:-noted_db}
       DB_USER: ${DB_USER:-root}
       DB_PASSWORD: ${DB_PASSWORD:-1234567890}
-      SERVER_PORT: ${SERVER_PORT:-8085}
+      SERVER_PORT: ${SERVER_PORT:-8084}
     ports:
-      - "8085:8085"
+      - "8084:8084"
     volumes:
       # Thu muc luu file that tren Ubuntu host, mount vao container
       - /data/noted/notes:/data/noted/notes

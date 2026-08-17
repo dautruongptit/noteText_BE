@@ -123,6 +123,54 @@ hệ thống này **cho phép trùng tên trên Drive**. Định danh duy nhất
 (do Google cấp phát) — `uploadFile()` luôn tạo file mới (không tìm theo tên), `updateFile()` luôn định
 danh bằng `fileId` có sẵn (không bao giờ tìm lại theo tên).
 
+**FIX quan trọng (đã sửa): self-invocation làm `@Async` mất tác dụng.** `runDebouncedSyncBatch()`/
+`flushDirtyNotes()` trước đây gọi thẳng `syncNote(...)` (self-invocation, bỏ qua Spring AOP proxy) —
+`@Async`/`@Transactional` riêng của `syncNote()` **không bao giờ có hiệu lực thật**, nó chạy đồng bộ
+trên transaction `readOnly=true` sẵn có của hàm gọi. Hibernate coi entity trong session read-only là
+read-only (bỏ qua dirty-checking khi flush) → `driveFileId`/`dirty`/`syncState` **không bao giờ được
+ghi xuống DB** dù Drive API upload thật sự thành công → note bị upload lại thành file MỚI mỗi chu kỳ
+debounce, vĩnh viễn (rác file trùng tích luỹ vô hạn trên Drive). Fix: tiêm 1 tham chiếu chính bean này
+qua proxy (`@Lazy DriveSyncService self`), gọi `self.syncNote(...)` thay vì `syncNote(...)`.
+
+**Incremental sync — Drive Changes API (đã implement, thay full-listing mỗi lần pull).**
+`pullFromDrive()` giờ tách 2 nhánh dựa vào `users.drive_changes_page_token`
+(`V8__add_drive_changes_page_token.sql`, NULL = chưa từng pull):
+- **Bootstrap** (lần đầu, token NULL): vẫn quét toàn bộ folder như cũ (`listFilesInFolder`) — đảm bảo
+  không bỏ sót file có sẵn từ trước khi bắt đầu theo dõi incremental — rồi gọi `getStartPageToken()`
+  NGAY SAU ĐÓ và lưu lại. Thứ tự quan trọng: full-listing trước, lấy token sau, để thay đổi xảy ra giữa
+  2 bước không bị lọt khỏi cả 2 nguồn.
+- **Incremental** (đã có token): chỉ hỏi Drive Changes API "gì đã đổi từ token này" (`listChanges()`,
+  tự lặp qua nhiều trang nếu có `nextPageToken`), xử lý từng file đổi qua đúng `pullOneFile()` như cũ, rồi
+  lưu lại `newStartPageToken` cho lần sau. File bị Drive báo xóa/mất quyền **chưa** tự động xóa note
+  tương ứng ở Noted (giữ nguyên tính nhất quán với hành vi full-listing cũ — vốn cũng không bao giờ tự
+  xóa note khi file biến mất khỏi danh sách) — chỉ log lại.
+- `disconnect()` reset token về NULL — lần connect lại sau phải bootstrap lại từ đầu.
+- ⚠️ **Lưu ý khi test**: đây là phần duy nhất trong các thay đổi gần đây gọi trực tiếp API Google Drive
+  Changes (`drive.changes().getStartPageToken()`/`drive.changes().list()`) — đã compile-check thành công
+  đối chiếu đúng thư viện `google-api-services-drive` thật trên classpath, nhưng **chưa được test chức
+  năng với tài khoản Drive thật** (không có credential trong môi trường phát triển này) — nên tự kiểm
+  tra kỹ luồng "Đồng bộ ngay" nhiều lần liên tiếp (đặc biệt lần thứ 2 trở đi, khi đã có token) trước khi
+  tin tưởng hoàn toàn.
+
+**Fix: note bị "kẹt" sync mãi mãi khi file gốc trên Drive bị xoá trực tiếp (đã sửa).**
+Trước đây `updateFile()` gọi tới 1 `driveFileId` đã bị xoá trên Drive (VD người dùng tự xoá tay trên
+Drive, không qua app) sẽ luôn ném lỗi 404 — nhưng code coi đó là lỗi *tạm thời*, tăng `driveSyncAttempts`
+rồi retry với **đúng `driveFileId` cũ** ở lần sau → thất bại y hệt mãi mãi, note không bao giờ đồng bộ lại
+được (đúng triệu chứng: "xoá trên Drive, web vẫn còn, bấm đồng bộ không lên"). Giờ `GoogleDriveServiceImpl.updateFile()`
+phát hiện riêng lỗi 404 (`GoogleJsonResponseException.getStatusCode()`), ném `DriveFileNotFoundException` — `DriveSyncServiceImpl`
+bắt riêng exception này: xoá `driveFileId` cũ, **upload lại ngay trong cùng 1 lần gọi** thành file hoàn
+toàn mới, không cần đợi thêm 1 chu kỳ debounce. Có test riêng (`DriveSyncServiceImplTest`) — lần đầu tiên
+`DriveSyncServiceImpl` có unit test (trước đây là gap đã biết, cần mock Google Drive API).
+
+**Mặt trận B — conflict Drive-vs-local-dirty (đã implement).** Trước đây `pullOneFile()` chỉ đơn giản
+bỏ qua pull khi note đang `dirty` (an toàn nhưng "mù" — không biết Drive có thật sự đổi độc lập hay
+không). Giờ dùng cột `drive_synced_content_hash` (baseline MD5 tại lần sync thành công gần nhất,
+`V6__add_drive_synced_content_hash.sql`) để so 3 chiều: nếu MD5 hiện tại của Drive vẫn khớp baseline,
+không có gì mới để mất — cứ để push bình thường ở lần debounce kế tiếp; nếu Drive đã khác baseline
+(nghĩa là Drive đổi độc lập trong lúc local cũng đang dirty) → **conflict thật** → giữ local (đang
+active) làm bản chính tiếp tục push, tách bản Drive thành 1 note riêng qua `NoteService.createConflictCopy()`
+(cùng cơ chế "giữ cả 2 bản" của mục 8).
+
 ## 7b. Chọn nhiều để xoá — CÓ; Chọn nhiều để sync — KHÔNG (quyết định nghiệp vụ)
 
 - **Bulk delete** (`POST /api/notes/bulk-delete`): xử lý trong 1 transaction duy nhất, chỉ xoá note
@@ -135,13 +183,25 @@ danh bằng `fileId` có sẵn (không bao giờ tìm lại theo tên).
 
 Khi client mất kết nối tới server, dữ liệu vẫn giữ trong **IndexedDB** ở trình duyệt (Local Mode).
 Khi có mạng lại (hoặc sau khi đăng nhập lần đầu, xem `migrateLocalNotesToServer` ở frontend), client
-gọi 1 lần `POST /api/sync/batch` gửi toàn bộ note đang chờ. Server so sánh `localUpdatedAtEpochMs`
-từng item với bản đang có.
+gọi 1 lần `POST /api/sync/batch` gửi toàn bộ note đang chờ.
 
-**Chiến lược conflict — "giữ cả 2 bản" (không còn tự ý bỏ bản thua):** nếu bản local đang cầm CŨ hơn
-bản server (server đã có bản mới hơn, VD sửa từ thiết bị/phiên khác trong lúc item còn nằm chờ trong
-hàng đợi offline), server **không** âm thầm bỏ bản local nữa — `NoteService.createConflictCopy()` tách
-bản local thành **1 note hoàn toàn mới** (tên có hậu tố `"(xung đột dd/MM HH:mm)"`, cờ
+**Phát hiện conflict bằng `version` (số nguyên tăng dần), không còn dùng timestamp** — đổi từ
+`localUpdatedAtEpochMs`/`updatedAt` (dễ lệch do đồng hồ hệ thống khác nhau giữa các lần request) sang
+Optimistic Concurrency Control kiểu `version`: cột `notes.version` (`V7__add_note_version.sql`) tăng 1 ở
+**mọi** lần ghi nội dung/tên thành công (`updateContent`, `rename`, nhánh ghi đè của `createNote`/`rename`-merge).
+Client giữ `version` mình biết được (`baseVersion`), gửi kèm mỗi item trong `SyncBatchItem`. Server so
+`item.baseVersion()` với `existing.getVersion()` — lệch nhau nghĩa là ai đó đã ghi trước, kể cả cùng
+millisecond.
+
+**Lưu ý quan trọng: `PATCH /api/notes/{id}/content` (autosave đang gõ sống) KHÔNG áp dụng OCC này** —
+route đó **luôn ghi đè**, chỉ tăng `version` để phục vụ so sánh ở nơi khác, không tự kiểm tra/từ chối gì
+cả ("phương án 2" đã chọn: ưu tiên phiên đang gõ, tránh UX phức tạp cho case hiếm gặp 2 tab cùng
+account autosave trùng lúc). OCC **chỉ thực sự có hiệu lực** ở `/api/sync/batch` — đúng nơi cần bảo vệ
+nhất (client offline quay lại, reconcile 1 lần).
+
+**Chiến lược conflict — "giữ cả 2 bản" (không còn tự ý bỏ bản thua):** nếu `baseVersion` client cầm khác
+`version` hiện tại của server, server **không** âm thầm bỏ bản local nữa — `NoteService.createConflictCopy()`
+tách bản local thành **1 note hoàn toàn mới** (tên có hậu tố `"(xung đột dd/MM HH:mm)"`, cờ
 `is_conflict_copy=TRUE`), trả về status `conflict_kept_both` kèm `conflictCopyId`/`conflictCopyName`.
 Note server giữ nguyên (`id`/`uuid` không đổi, vẫn là "bản thắng"). Frontend (`useOfflineSync.ts`) coi
 `conflict_kept_both` như đã đồng bộ xong (xoá khỏi hàng đợi retry), đồng thời hiện banner báo cho người
@@ -192,12 +252,12 @@ openssl rand -base64 32   # dùng để sinh JWT_SECRET và CRYPTO_SECRET_KEY
 docker compose up -d --build
 ```
 
-Backend chạy tại `http://localhost:8085`. MySQL tại `localhost:3306` (container `mysql8`, cùng
+Backend chạy tại `http://localhost:8084`. MySQL tại `localhost:3306` (container `mysql8`, cùng
 `dev-network`). Frontend build ra `dist/` và serve qua nginx ở port `85` (xem repo
-[`noteText_web`](../noteText_web/README.md)), nginx reverse-proxy `/api/**` sang backend `8085`.
+[`noteText_web`](../noteText_web/README.md)), nginx reverse-proxy `/api/**` sang backend `8084`.
 Nếu chạy frontend bằng `pnpm dev` trực tiếp (không qua nginx), nhớ khớp `ALLOWED_ORIGINS` +
 `FRONTEND_REDIRECT_URL`/`DRIVE_FRONTEND_CALLBACK_URL` trong `.env` với đúng port frontend đang chạy
-(mặc định quy ước 5175).
+(mặc định quy ước 8445).
 
 ## 11. Trạng thái thật hiện tại (đối chiếu code, không phải checklist dự đoán)
 
@@ -207,12 +267,16 @@ Nếu chạy frontend bằng `pnpm dev` trực tiếp (không qua nginx), nhớ 
 - ✅ Rate limiting cho `PATCH /content` — `RateLimitInterceptor` + `TokenBucket`
 - ✅ Trùng tên → ghi đè ở `create`/`rename` (giữ nguyên `duplicate` tự tránh trùng) — `NoteServiceImplTest`
 - ✅ Ghi file atomic — `LocalFileStorageServiceImplTest`
+- ✅ Conflict "giữ cả 2 bản" cho offline-batch (mặt trận A) và Drive-vs-local-dirty (mặt trận B) — chưa có test riêng (cần mock Google Drive API khá nhiều, xem mục "còn thiếu" bên dưới)
+- ✅ Fix self-invocation `syncNote()` (`@Lazy self` reference) — không còn rác file trùng trên Drive
+- ✅ Conflict detection bằng `version` (OCC) thay `updatedAt`/`localUpdatedAtEpochMs` cho `/api/sync/batch` — `NoteServiceImplTest`
+- ✅ `NotePurgeServiceImpl.purgeExpiredNotes()` — xóa vĩnh viễn thật (file vật lý best-effort, gọi lại
+  `deleteFromDrive()` làm lưới an toàn dự phòng, rồi mới xóa DB record) — `NotePurgeServiceImplTest`
+- ✅ `NoteSyncEventListener.onNoteDeleted` giờ `@Async` — xoá/bulk-delete không còn chờ round-trip Drive API trước khi trả response
+- ✅ `SyncBatchItem` có validation (`@NotBlank`/`@NotNull` + `@Valid` ở `SyncController`) — item malformed bị từ chối 400 rõ ràng thay vì lọt qua
+- ⚠️ Incremental sync (Drive Changes API) — implement xong, compile-check qua thư viện thật, **chưa test được với Drive thật** trong môi trường này (xem mục 7)
 
 Còn thiếu / dở dang thật sự (đã đọc trực tiếp code để xác nhận, không suy đoán):
-- ⚠️ **`NotePurgeServiceImpl.purgeExpiredNotes()` là stub RỖNG** — tính `threshold` xong không làm gì
-  cả. Note soft-delete quá `app.notes.purge-after-days` (mặc định 30 ngày) **hiện KHÔNG bao giờ bị
-  xóa vĩnh viễn thật** (cả file vật lý, record DB, lẫn bản trên Drive) dù job `@Scheduled` có chạy đều.
-  Đây là việc cần làm tiếp theo ưu tiên cao nhất.
 - 🧹 `NoteContentChangedEvent`/kiến trúc sync-theo-sự-kiện cũ là dead code, có thể xóa hẳn (xem mục 7).
 - 🧪 Chưa có unit test cho `GoogleDriveServiceImpl`/`DriveSyncServiceImpl` (mock Drive API) và
   `RateLimitInterceptor`/`TokenBucket`/`JwtTokenProvider`.
