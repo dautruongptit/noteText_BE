@@ -75,7 +75,11 @@ Tên file vật lý trên disk **luôn là UUID**, không dùng tên hiển th�
 | Giai đoạn | Mục đích | Scope |
 |---|---|---|
 | **Login** (`/oauth2/authorization/google`) | Xác thực danh tính, tạo `User` trong DB, sinh JWT nội bộ | `openid email profile` |
-| **Connect Drive** (`GET /api/drive/connect` → `GET /api/drive/callback`) | Xin quyền `drive.file` + `access_type=offline`, đổi `code` lấy `refresh_token` thật qua `GoogleTokenExchangeService`, tạo/tìm app folder ngay để phát hiện lỗi sớm | `drive.file` |
+| **Connect Drive** (`GET /api/drive/connect` → `GET /api/drive/callback`) | Xin quyền `drive` (full) + `access_type=offline`, đổi `code` lấy `refresh_token` thật qua `GoogleTokenExchangeService`, tạo/tìm app folder ngay để phát hiện lỗi sớm | `drive` |
+
+**Đổi từ `drive.file` sang `drive` (2026-08-18)** — lý do: `drive.file` là scope "per-file access", app **CHỈ thấy file do chính nó tạo ra**, không thấy được file người dùng tự tay tải lên thư mục "NotedApp" qua giao diện Drive web (xác nhận trực tiếp qua Drive API thật — file tự upload hoàn toàn vô hình với app dù đúng thư mục). Không dùng `drive.readonly` được vì app cần **ghi** (upload/update/xoá note). Người dùng **đã kết nối Drive từ trước** (lúc còn scope `drive.file`) phải **ngắt kết nối rồi kết nối lại** — `refresh_token` cũ không tự có quyền rộng hơn.
+
+⚠️ **Hệ quả kỹ thuật quan trọng của việc đổi scope**: `drive.file` trước đây vô tình làm Drive Changes API (`incrementalPull()`) tự giới hạn trong phạm vi file của app (do Google chỉ trả về những gì app *thấy được*). Với scope `drive` đầy đủ, Changes API giờ báo **thay đổi của TOÀN BỘ Drive** người dùng — nếu không lọc, bất kỳ file `.txt` nào ở bất kỳ đâu trong Drive cũng có thể bị nhận nhầm thành note. Đã thêm lọc bắt buộc theo `parents` (thư mục cha) ngay trong `GoogleDriveServiceImpl.listChanges()` — chỉ giữ lại thay đổi của file thực sự nằm trong thư mục "NotedApp", trước khi đưa cho `pullOneFile()` xử lý.
 
 `refresh_token` được mã hóa AES-256-GCM (`CryptoUtil`) trước khi lưu vào cột `users.drive_refresh_token_enc`.
 `state` param của bước connect được ký JWT riêng (`JwtTokenProvider.generateDriveStateToken`) để chống CSRF,
@@ -152,15 +156,41 @@ qua proxy (`@Lazy DriveSyncService self`), gọi `self.syncNote(...)` thay vì `
   tra kỹ luồng "Đồng bộ ngay" nhiều lần liên tiếp (đặc biệt lần thứ 2 trở đi, khi đã có token) trước khi
   tin tưởng hoàn toàn.
 
-**Fix: note bị "kẹt" sync mãi mãi khi file gốc trên Drive bị xoá trực tiếp (đã sửa).**
-Trước đây `updateFile()` gọi tới 1 `driveFileId` đã bị xoá trên Drive (VD người dùng tự xoá tay trên
-Drive, không qua app) sẽ luôn ném lỗi 404 — nhưng code coi đó là lỗi *tạm thời*, tăng `driveSyncAttempts`
-rồi retry với **đúng `driveFileId` cũ** ở lần sau → thất bại y hệt mãi mãi, note không bao giờ đồng bộ lại
-được (đúng triệu chứng: "xoá trên Drive, web vẫn còn, bấm đồng bộ không lên"). Giờ `GoogleDriveServiceImpl.updateFile()`
-phát hiện riêng lỗi 404 (`GoogleJsonResponseException.getStatusCode()`), ném `DriveFileNotFoundException` — `DriveSyncServiceImpl`
+**Fix: note bị "kẹt" sync mãi mãi khi file gốc trên Drive bị xoá trực tiếp (đã sửa, 2 phần).**
+
+Phần 1 — `updateFile()` gọi tới 1 `driveFileId` đã bị xoá trên Drive luôn ném lỗi 404, nhưng code cũ coi
+đó là lỗi *tạm thời*, tăng `driveSyncAttempts` rồi retry với **đúng `driveFileId` cũ** ở lần sau → thất
+bại y hệt mãi mãi. Giờ `GoogleDriveServiceImpl.updateFile()` phát hiện riêng lỗi 404
+(`GoogleJsonResponseException.getStatusCode()`), ném `DriveFileNotFoundException` — `DriveSyncServiceImpl`
 bắt riêng exception này: xoá `driveFileId` cũ, **upload lại ngay trong cùng 1 lần gọi** thành file hoàn
-toàn mới, không cần đợi thêm 1 chu kỳ debounce. Có test riêng (`DriveSyncServiceImplTest`) — lần đầu tiên
-`DriveSyncServiceImpl` có unit test (trước đây là gap đã biết, cần mock Google Drive API).
+toàn mới.
+
+Phần 2 (phát hiện thêm khi test thực tế) — Phần 1 **chỉ** có tác dụng nếu note đang `dirty=true` (đang có
+gì đó cần push). Note **đã sync xong từ trước** (`dirty=false`) mà bị xoá file trực tiếp trên Drive thì
+`flushDirtyNotes()` (chạy TRƯỚC `pullFromDrive()` trong cùng 1 lần "Đồng bộ ngay") bỏ qua hoàn toàn vì
+note không hề dirty — không bao giờ chạm tới code fix ở Phần 1. `incrementalPull()`/`bootstrapPull()`
+trước đây chỉ *log lại* danh sách file bị xoá trên Drive (`removedFileIds`), không hành động gì. Giờ 2
+hàm này chủ động: tìm note theo `driveFileId` bị xoá, xoá `driveFileId` cũ + đánh dấu `dirty=true`, rồi
+gọi `self.syncNote()` ngay lập tức — note tự động được tạo lại trên Drive **trong cùng 1 lần** "Đồng bộ
+ngay", không cần bấm lần 2.
+
+Phần 3 (xác nhận trực tiếp qua Drive API thật, không chỉ log/DB) — hoá ra 2 note bị "kẹt" không phải do
+xoá vĩnh viễn, mà do bấm "Xoá" trên giao diện Drive (mặc định = **chuyển vào Thùng rác**, không xoá hẳn).
+File trong thùng rác **KHÔNG** trả 404 — Drive API vẫn cho đọc/ghi nội dung bình thường, chỉ ẩn khỏi thư
+mục — nên Phần 1/2 (dựa vào 404/"removed") không phát hiện được. Thêm `GoogleDriveService.isFileTrashed()`,
+kiểm tra riêng TRƯỚC khi `updateFile()` (đường push) và trong `pullOneFile()` (đường pull, tự phục hồi dù
+note không dirty, vì Changes API báo hành động trash là `"changed"` chứ không phải `"removed"`) — coi
+trashed tương đương "không dùng được nữa", tái sử dụng đúng cơ chế hồi phục ở Phần 1/2.
+
+Phần 4 — Drive Changes API (`drive.file` scope) có thể báo cả thay đổi của **chính app-folder "NotedApp"**
+(vì app có quyền thấy mọi file/folder chính nó tạo ra, kể cả folder). Nếu không lọc, `pullOneFile()` cố
+gọi `downloadFileContent()` lên 1 folder → Drive trả `403 fileNotDownloadable` (folder/Google Docs không
+có nội dung nhị phân để tải qua `alt=media`). Lọc `mimeType='text/plain'` ở cả tầng query
+(`listFilesInFolder()`) lẫn 1 guard đầu `pullOneFile()` (chặn luôn item lạc vào từ Changes API, vốn không
+lọc được theo mimeType ở tầng query như `files.list()`).
+
+Có test riêng cho cả 4 phần (`DriveSyncServiceImplTest`, 7 test) — lần đầu tiên `DriveSyncServiceImpl` có
+unit test (trước đây là gap đã biết, cần mock Google Drive API).
 
 **Mặt trận B — conflict Drive-vs-local-dirty (đã implement).** Trước đây `pullOneFile()` chỉ đơn giản
 bỏ qua pull khi note đang `dirty` (an toàn nhưng "mù" — không biết Drive có thật sự đổi độc lập hay

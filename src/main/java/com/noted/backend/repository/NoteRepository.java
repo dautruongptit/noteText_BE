@@ -52,4 +52,10 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
     // lay TOAN BO note dirty cua 1 user, BO QUA nguong 30s (nguoi dung/trinh
     // duyet da chu dong yeu cau dong bo NGAY, khong can doi them).
     List<Note> findByDirtyTrueAndDeletedFalseAndUserId(Long userId);
+
+    // Dung cho bootstrapPull() (lan pull DAU TIEN, quet toan bo folder): doi
+    // chieu note nao dang GIU driveFileId nhung KHONG con xuat hien trong lan
+    // quet nay nua (VD bi xoa truc tiep tren Drive TRUOC KHI ket noi/bootstrap) -
+    // xem DriveSyncServiceImpl.
+    List<Note> findByUserIdAndDeletedFalseAndDriveFileIdIsNotNull(Long userId);
 }

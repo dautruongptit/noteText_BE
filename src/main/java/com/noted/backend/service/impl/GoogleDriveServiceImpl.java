@@ -201,7 +201,11 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         }
 
         try {
-            String query = String.format("'%s' in parents and trashed=false", folderId);
+            // mimeType='text/plain': Noted CHI bao gio tao note dang nay (xem
+            // uploadFile/updateFile) - loc ngay tu truy van, tranh "nhan nham"
+            // 1 folder con hoac Google Doc/Sheet nguoi dung lo tao/di chuyen
+            // vao trong app-folder thanh note (xem them guard o pullOneFile()).
+            String query = String.format("'%s' in parents and trashed=false and mimeType='text/plain'", folderId);
 
             // .setFields(...) THEO DUNG YEU CAU: lay ve day du id, name, size,
             // modifiedTime, owners, mimeType cho tung file - dung de hien thi
@@ -239,7 +243,7 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
     }
 
     @Override
-    public ChangesResult listChanges(Drive drive, String pageToken) {
+    public ChangesResult listChanges(Drive drive, String pageToken, String folderId) {
         if (!StringUtils.hasText(pageToken)) {
             throw new IllegalArgumentException("pageToken khong duoc de trong khi lay danh sach thay doi");
         }
@@ -255,20 +259,32 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             // het trang. Google CHI tra ve "newStartPageToken" o TRANG CUOI
             // CUNG - danh dau da quet het, dung lam token cho lan goi ke tiep.
             do {
+                // "parents" THEM VAO tu khi doi sang scope "drive" day du
+                // (2026-08-18) - can de tu loc lai theo app-folder ben duoi,
+                // vi Changes API KHONG ho tro .setQ() nhu files().list().
                 ChangeList result = drive.changes().list(currentToken)
                         .setSpaces("drive")
                         .setFields("nextPageToken, newStartPageToken, "
-                                + "changes(fileId, removed, file(id, name, size, modifiedTime, owners, mimeType))")
+                                + "changes(fileId, removed, file(id, name, size, modifiedTime, owners, mimeType, parents))")
                         .execute();
 
                 if (result.getChanges() != null) {
                     for (Change change : result.getChanges()) {
                         // "removed"=true HOAC file()=null (Drive khong con tra
                         // ve metadata) deu nghia la file da bi xoa/mat quyen -
-                        // KHONG con gi de doi chieu ngoai fileId.
+                        // KHONG con gi de doi chieu ngoai fileId. KHONG loc
+                        // theo folder o nhanh nay - AN TOAN SAN vi nguoi goi
+                        // (DriveSyncServiceImpl) chi hanh dong khi fileId nay
+                        // KHOP voi 1 note co san trong DB (chi co the la note
+                        // cua Noted, khong the la file la o noi khac tren Drive).
                         if (Boolean.TRUE.equals(change.getRemoved()) || change.getFile() == null) {
                             removedFileIds.add(change.getFileId());
-                        } else {
+                        } else if (change.getFile().getParents() != null
+                                && change.getFile().getParents().contains(folderId)) {
+                            // CHI giu file THAT SU nam trong app-folder - loc
+                            // BAT BUOC vi scope "drive" day du khien Changes
+                            // API bao thay doi cua CA DRIVE, khong con tu gioi
+                            // han trong pham vi app nhu luc con dung "drive.file".
                             changedFiles.add(toDriveFileInfo(change.getFile()));
                         }
                     }
@@ -353,6 +369,25 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             // thuong (an toan hon la chan ca luong sync vi 1 buoc toi uu that bai).
             log.debug("Khong lay duoc md5Checksum cho file Drive (id={}): {}", fileId, e.getMessage());
             return null;
+        }
+    }
+
+    @Override
+    public boolean isFileTrashed(Drive drive, String fileId) {
+        if (!StringUtils.hasText(fileId)) return false;
+        try {
+            File file = drive.files().get(fileId).setFields("trashed").execute();
+            return Boolean.TRUE.equals(file.getTrashed());
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() == 404) {
+                log.warn("Kiem tra trashed that bai - file Drive (id={}) khong con ton tai (404)", fileId);
+                throw new DriveFileNotFoundException(fileId, e);
+            }
+            log.warn("Kiem tra trang thai thung rac cho file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra trang thai file tren Google Drive (id=" + fileId + ")", e);
+        } catch (Exception e) {
+            log.warn("Kiem tra trang thai thung rac cho file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra trang thai file tren Google Drive (id=" + fileId + ")", e);
         }
     }
 }

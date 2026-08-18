@@ -40,7 +40,16 @@ spring:
               - openid
               - email
               - profile
-              - https://www.googleapis.com/auth/drive.file
+              # Doi tu "drive.file" sang "drive" day du (2026-08-18, theo yeu
+              # cau nghiep vu moi: app can THAY duoc ca file nguoi dung tu tay
+              # them vao thu muc NotedApp tren Drive, khong chi file CHINH app
+              # tao ra - "drive.file" khong the lam duoc dieu nay, day la gioi
+              # han cua chinh Google, khong phai loi code). QUAN TRONG: doi
+              # sang scope rong hon nay bat buoc phai loc lai theo THU MUC khi
+              # xu ly Changes API (xem DriveSyncServiceImpl.incrementalPull) -
+              # Changes API gio bao thay doi cua CA DRIVE, khong con tu dong
+              # gioi han trong pham vi app nhu luc con dung drive.file.
+              - https://www.googleapis.com/auth/drive
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
             authorization-grant-type: authorization_code
         provider:

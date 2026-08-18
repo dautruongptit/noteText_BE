@@ -98,12 +98,17 @@ public interface GoogleDriveService {
     String getStartPageToken(Drive drive);
 
     /**
-     * Lay danh sach thay doi tren TOAN BO Drive ke tu "pageToken" (dung cho
-     * incremental sync). Vi scope OAuth la "drive.file" (app chi thay duoc
-     * file CHINH NO tao ra), ket qua tu nhien da gioi han trong pham vi file
-     * cua Noted, khong can loc them theo folder o tang nay.
+     * Lay danh sach thay doi tren TOAN BO DRIVE ke tu "pageToken" (dung cho
+     * incremental sync) - Changes API KHONG ho tro loc theo folder o tang
+     * truy van (khac voi files().list() co the .setQ()). Vi scope OAuth la
+     * "drive" day du (doi tu "drive.file" 2026-08-18, xem application.yml),
+     * ket qua KHONG con tu dong gioi han trong pham vi app nua - PHAI truyen
+     * "folderId" de ham nay tu loc lai, chi giu cac file THAT SU nam trong
+     * app-folder (kiem tra "parents"). Neu khong loc, bat ky file .txt nao o
+     * BAT KY DAU trong Drive cua nguoi dung cung co the bi "nhan nham" thanh
+     * note (rui ro nghiem trong - xem DriveSyncServiceImpl.incrementalPull).
      */
-    ChangesResult listChanges(Drive drive, String pageToken);
+    ChangesResult listChanges(Drive drive, String pageToken, String folderId);
 
     /**
      * Tai NOI DUNG THAT SU cua 1 file tren Drive ve (dung cho luong PULL -
@@ -127,4 +132,19 @@ public interface GoogleDriveService {
      * Tra ve null neu file khong ton tai/khong lay duoc checksum.
      */
     String getFileChecksum(Drive drive, String fileId);
+
+    /**
+     * File co dang nam trong THUNG RAC Drive hay khong - KHAC HOAN TOAN voi
+     * "khong ton tai" (404): 1 file bi cho vao thung rac (nguoi dung bam "Xoa"
+     * tren giao dien Drive - hanh dong MAC DINH, KHONG phai "Xoa vinh vien")
+     * VAN duoc Drive API cho phep doc/ghi noi dung binh thuong nhu chua co gi
+     * xay ra - chi bi AN khoi giao dien thu muc thong thuong. Neu goi update()
+     * ma khong kiem tra rieng dieu nay, sync "thanh cong" (khong loi gi) nhung
+     * nguoi dung se KHONG BAO GIO thay file do trong thu muc nua - dung bao
+     * cao thuc te 2026-08-18 (file van con, dung ten/dung folder, nhung
+     * trashed=true, ket qua kiem tra truc tiep qua Drive API that).
+     *
+     * @throws com.noted.backend.exception.DriveFileNotFoundException neu fileId khong con ton tai chut nao (404 that su)
+     */
+    boolean isFileTrashed(Drive drive, String fileId);
 }

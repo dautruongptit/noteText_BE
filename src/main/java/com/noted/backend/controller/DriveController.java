@@ -78,7 +78,14 @@ public class DriveController {
                 .queryParam("response_type", "code")
                 .queryParam("access_type", "offline")
                 .queryParam("prompt", "consent") // dam bao GAN NHU luon nhan duoc refresh_token (xem GoogleTokenExchangeServiceImpl)
-                .queryParam("scope", "https://www.googleapis.com/auth/drive.file")
+                // "drive" day du (khong con "drive.file") - de app thay duoc
+                // ca file nguoi dung tu tay them vao thu muc NotedApp tren
+                // Drive, khong chi file CHINH app tao ra (xem giai thich chi
+                // tiet trong application.yml canh scope tuong tu cua luong
+                // login). Nguoi dung DA KET NOI Drive tu truoc (luc con scope
+                // "drive.file") PHAI ngat ket noi roi ket noi lai de duoc cap
+                // quyen moi - refresh_token cu KHONG tu dong co quyen rong hon.
+                .queryParam("scope", "https://www.googleapis.com/auth/drive")
                 .queryParam("state", state)
                 .build()
                 .encode()
