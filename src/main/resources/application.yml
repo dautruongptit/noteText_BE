@@ -40,31 +40,16 @@ spring:
               - openid
               - email
               - profile
-              # Scope Drive lay tu MOT BIEN DUY NHAT, dung chung voi luong
-              # "Ket noi Drive" o DriveController.connect(). Truoc day 2 cho nay
-              # ghi rieng nen da tung lech nhau va rat kho phat hien.
-              #
-              # Doi giua 2 gia tri bang bien moi truong DRIVE_OAUTH_SCOPE,
-              # KHONG can sua code:
-              #
-              #   .../auth/drive.file  (mac dinh)
-              #     Scope "non-sensitive" - Google KHONG hien man hinh canh bao
-              #     "chua xac minh ung dung", KHONG can tham dinh. App toan quyen
-              #     tren file DO CHINH NO tao (tao thu muc, upload, update, xoa,
-              #     tai ve) - toan bo luong dong bo chay day du.
-              #
-              #   .../auth/drive       (rong hon)
-              #     Thay duoc CA file nguoi dung tu tay them vao thu muc NotedApp.
-              #     Doi lai: Google xep la "restricted scope" -> luon hien canh bao
-              #     "chua xac minh", va muon go canh bao thi phai qua tham dinh an
-              #     ninh CASA hang nam (co phi). Scope nay cung la thu da lam lo ra
-              #     su co 2026-08-22 (tai khoan moi ghi note vao Drive tai khoan cu)
-              #     - no cho app nhin thay thu muc nguoi khac chia se.
-              #
-              # LUU Y: doi bien nay KHONG tu dong doi quyen cua ket noi dang co.
-              # Google khong bao gio nang/ha scope cua token da cap - phai Ngat
-              # ket noi roi Ket noi lai thi scope moi co hieu luc.
-              - ${DRIVE_OAUTH_SCOPE:https://www.googleapis.com/auth/drive.file}
+              # Doi tu "drive.file" sang "drive" day du (2026-08-18, theo yeu
+              # cau nghiep vu moi: app can THAY duoc ca file nguoi dung tu tay
+              # them vao thu muc NotedApp tren Drive, khong chi file CHINH app
+              # tao ra - "drive.file" khong the lam duoc dieu nay, day la gioi
+              # han cua chinh Google, khong phai loi code). QUAN TRONG: doi
+              # sang scope rong hon nay bat buoc phai loc lai theo THU MUC khi
+              # xu ly Changes API (xem DriveSyncServiceImpl.incrementalPull) -
+              # Changes API gio bao thay doi cua CA DRIVE, khong con tu dong
+              # gioi han trong pham vi app nhu luc con dung drive.file.
+              - https://www.googleapis.com/auth/drive
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
             authorization-grant-type: authorization_code
         provider:
@@ -125,9 +110,6 @@ app:
 
   drive:
     app-folder-name: "NotedApp"
-    # Cung 1 bien voi scope o luong dang nhap phia tren - xem giai thich
-    # day du o do. Doi bang DRIVE_OAUTH_SCOPE, khong sua code.
-    oauth-scope: ${DRIVE_OAUTH_SCOPE:https://www.googleapis.com/auth/drive.file}
     sync-retry-max-attempts: 5
     sync-job-fixed-delay-ms: 30000   # job nen chay moi 30s
     sync-debounce-idle-ms: 5000
