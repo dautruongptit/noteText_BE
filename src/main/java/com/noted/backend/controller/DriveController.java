@@ -51,6 +51,9 @@ public class DriveController {
     @Value("${spring.security.oauth2.client.registration.google.client-id}")
     private String googleClientId;
 
+    @Value("${app.drive.app-folder-name}")
+    private String appFolderName;
+
     @Value("${app.drive.redirect-uri}")
     private String driveRedirectUri;
 
@@ -60,9 +63,15 @@ public class DriveController {
     @GetMapping("/status")
     public Map<String, Object> status(@AuthenticationPrincipal Long userId) {
         User user = userRepository.findById(userId).orElseThrow();
+        // Tra ca folderName de UI hien TEN THAT cua thu muc. Truoc day DrivePanel
+        // viet cung chuoi "/Noted Workspace" trong khi ten that la "NotedApp" -
+        // nguoi dung doc xong di tim trong Drive khong thay, tuong app khong tao
+        // thu muc (bao cao thuc te 2026-08-22). Backend da TU TAO thu muc thi cang
+        // phai cho nguoi dung nhin thay ket qua, neu khong no thanh hop den.
         return Map.of(
                 "connected", user.isDriveConnected(),
-                "folderId", user.getDriveFolderId() == null ? "" : user.getDriveFolderId()
+                "folderId", user.getDriveFolderId() == null ? "" : user.getDriveFolderId(),
+                "folderName", appFolderName
         );
     }
 

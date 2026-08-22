@@ -103,9 +103,25 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         }
         try {
             String escapedName = folderName.trim().replace("'", "\\'");
+            // "'me' in owners" la dieu kien BAT BUOC, khong phai toi uu.
+            // setSpaces("drive") bao gom CA muc "Duoc chia se voi toi", nen neu
+            // thieu dieu kien nay, 1 tai khoan MOI se tim thay va "nhan vo" thu
+            // muc NotedApp cua NGUOI KHAC da tung chia se cho no, thay vi tao
+            // thu muc rieng cua minh. Bug thuc te 2026-08-22: tai khoan
+            // dautruong.dt@ ghi note cua minh vao thu muc NotedApp thuoc so huu
+            // cua dautruongptit@ (ownedByMe=false, canAddChildren=true do duoc
+            // chia se quyen sua) - nguoi dung tuong "app khong tao thu muc" vi
+            // khong thay no trong Drive cua chinh minh.
+            //
+            // Truoc day loi nay KHONG THE xay ra vi app chay bang scope
+            // "drive.file" (chi nhin thay file do CHINH app tao). Doi sang scope
+            // "drive" day du (de thay file nguoi dung tu them vao thu muc) da mo
+            // ra kha nang nhin thay thu muc cua tai khoan khac.
             String query = String.format(
-                    "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                    "name='%s' and mimeType='application/vnd.google-apps.folder' "
+                            + "and trashed=false and 'me' in owners",
                     escapedName);
+
             FileList result = drive.files().list().setQ(query).setSpaces("drive").setFields("files(id)").execute();
 
             if (result.getFiles() != null && !result.getFiles().isEmpty()) {
@@ -205,16 +221,25 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
             // uploadFile/updateFile) - loc ngay tu truy van, tranh "nhan nham"
             // 1 folder con hoac Google Doc/Sheet nguoi dung lo tao/di chuyen
             // vao trong app-folder thanh note (xem them guard o pullOneFile()).
-            String query = String.format("'%s' in parents and trashed=false and mimeType='text/plain'", folderId);
+            // "'me' in owners": thu muc CUA TOI van co the chua file CUA NGUOI
+            // KHAC - neu toi da chia se thu muc do kem quyen sua, ho tao file
+            // thang vao day duoc. Khong loc thi Noted se nhan chung thanh note
+            // cua minh, roi tu do moi lan sua deu ghi de len file thuoc so huu
+            // nguoi khac (bug thuc te 2026-08-22, chieu nguoc lai cua viec
+            // nhan nham thu muc). Nghiep vu doi xung: chi ghi vao Drive cua
+            // chinh minh THI CUNG chi nhan file cua chinh minh.
+            String query = String.format(
+                    "'%s' in parents and trashed=false and mimeType='text/plain' and 'me' in owners",
+                    folderId);
 
             // .setFields(...) THEO DUNG YEU CAU: lay ve day du id, name, size,
-            // modifiedTime, owners, mimeType cho tung file - dung de hien thi
+            // modifiedTime, ownedByMe, mimeType cho tung file - dung de hien thi
             // chi tiet file tren UI (VD DrivePanel sau nay muon hien dung
             // luong/thoi gian sua/chu so huu), khong chi mac dinh vai field it oi.
             FileList result = drive.files().list()
                     .setQ(query)
                     .setSpaces("drive")
-                    .setFields("files(id, name, size, modifiedTime, owners, mimeType)")
+                    .setFields("files(id, name, size, modifiedTime, ownedByMe, mimeType)")
                     .execute();
 
             List<DriveFileInfo> infos = new ArrayList<>();
@@ -265,7 +290,7 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
                 ChangeList result = drive.changes().list(currentToken)
                         .setSpaces("drive")
                         .setFields("nextPageToken, newStartPageToken, "
-                                + "changes(fileId, removed, file(id, name, size, modifiedTime, owners, mimeType, parents))")
+                                + "changes(fileId, removed, file(id, name, size, modifiedTime, ownedByMe, mimeType, parents))")
                         .execute();
 
                 if (result.getChanges() != null) {
@@ -304,15 +329,12 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
     }
 
     private DriveFileInfo toDriveFileInfo(File f) {
-        String ownerEmail = (f.getOwners() != null && !f.getOwners().isEmpty())
-                ? f.getOwners().get(0).getEmailAddress()
-                : null;
         return new DriveFileInfo(
                 f.getId(),
                 f.getName(),
                 f.getSize(),
                 f.getModifiedTime() != null ? f.getModifiedTime().toStringRfc3339() : null,
-                ownerEmail,
+                Boolean.TRUE.equals(f.getOwnedByMe()),
                 f.getMimeType()
         );
     }
@@ -388,6 +410,72 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         } catch (Exception e) {
             log.warn("Kiem tra trang thai thung rac cho file Drive (id={}) that bai", fileId, e);
             throw new GoogleDriveOperationException("Khong the kiem tra trang thai file tren Google Drive (id=" + fileId + ")", e);
+        }
+    }
+
+    @Override
+    public boolean isFolderOwnedByMe(Drive drive, String folderId) {
+        if (!StringUtils.hasText(folderId)) return false;
+        try {
+            File folder = drive.files().get(folderId)
+                    .setFields("ownedByMe,trashed,mimeType")
+                    .execute();
+
+            // Ca ba dieu kien deu phai dung. "ownedByMe" la dieu kien cot loi:
+            // no la thu DUY NHAT phan biet duoc "thu muc cua toi" voi "thu muc
+            // cua nguoi khac chia se cho toi kem quyen sua" - ma nhin tu phia
+            // ghi file thi hai truong hop nay hoat dong y het nhau.
+            boolean laThuMuc = "application/vnd.google-apps.folder".equals(folder.getMimeType());
+            return laThuMuc
+                    && Boolean.TRUE.equals(folder.getOwnedByMe())
+                    && !Boolean.TRUE.equals(folder.getTrashed());
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() == 404) {
+                // Khong con ton tai, hoac tai khoan nay khong co quyen nhin thay
+                // nua (VD da bi thu hoi chia se) - deu la "khong dung duoc".
+                log.warn("Thu muc Drive (id={}) khong truy cap duoc (404) - se tao thu muc moi", folderId);
+                return false;
+            }
+            log.warn("Kiem tra quyen so huu thu muc Drive (id={}) that bai", folderId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra thu muc tren Google Drive (id=" + folderId + ")", e);
+        } catch (Exception e) {
+            log.warn("Kiem tra quyen so huu thu muc Drive (id={}) that bai", folderId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra thu muc tren Google Drive (id=" + folderId + ")", e);
+        }
+    }
+
+    @Override
+    public boolean isFileUsable(Drive drive, String fileId, String folderId) {
+        if (!StringUtils.hasText(fileId) || !StringUtils.hasText(folderId)) return false;
+        try {
+            File file = drive.files().get(fileId)
+                    .setFields("trashed,ownedByMe,parents")
+                    .execute();
+
+            if (Boolean.TRUE.equals(file.getTrashed())) {
+                log.info("File Drive (id={}) dang trong thung rac - se tao lai thanh file moi", fileId);
+                return false;
+            }
+            if (!Boolean.TRUE.equals(file.getOwnedByMe())) {
+                log.warn("File Drive (id={}) THUOC SO HUU tai khoan khac - tu choi ghi de, "
+                        + "se tao file moi trong thu muc cua chinh minh", fileId);
+                return false;
+            }
+            if (file.getParents() == null || !file.getParents().contains(folderId)) {
+                log.warn("File Drive (id={}) khong con nam trong app-folder (id={}) - "
+                        + "se tao lai thanh file moi", fileId, folderId);
+                return false;
+            }
+            return true;
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() == 404) {
+                throw new DriveFileNotFoundException(fileId, e);
+            }
+            log.warn("Kiem tra file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra file tren Google Drive (id=" + fileId + ")", e);
+        } catch (Exception e) {
+            log.warn("Kiem tra file Drive (id={}) that bai", fileId, e);
+            throw new GoogleDriveOperationException("Khong the kiem tra file tren Google Drive (id=" + fileId + ")", e);
         }
     }
 }

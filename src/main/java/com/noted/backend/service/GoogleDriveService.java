@@ -27,7 +27,11 @@ public interface GoogleDriveService {
             String name,
             Long sizeBytes,
             String modifiedTime,
-            String ownerEmail,
+            // Doi tu "ownerEmail" (lay ve nhung khong noi nao dung) sang co nay:
+            // so sanh email KHONG dang tin - nguoi dung co the dang nhap Noted bang
+            // tai khoan A nhung ket noi Drive bang tai khoan B. "ownedByMe" do
+            // CHINH Drive tra ve, luon dung theo tai khoan cua access token.
+            boolean ownedByMe,
             String mimeType
     ) {}
 
@@ -147,4 +151,44 @@ public interface GoogleDriveService {
      * @throws com.noted.backend.exception.DriveFileNotFoundException neu fileId khong con ton tai chut nao (404 that su)
      */
     boolean isFileTrashed(Drive drive, String fileId);
+
+    /**
+     * Thu muc nay co THUOC SO HUU cua chinh tai khoan dang dang nhap khong?
+     *
+     * NGHIEP VU BAT BUOC: note cua 1 tai khoan Google CHI duoc phep nam trong
+     * Drive cua CHINH tai khoan do. Chi kiem tra "thu muc con ton tai va ghi
+     * duoc khong" la KHONG DU - Google VAN cho ghi vao thu muc cua nguoi khac
+     * neu thu muc do duoc chia se kem quyen sua. Day dung la bug thuc te
+     * 2026-08-22: tai khoan dautruong.dt@ ghi note vao thu muc NotedApp thuoc
+     * so huu cua dautruongptit@ (ownedByMe=false nhung canAddChildren=true).
+     *
+     * Tra ve false neu thu muc khong con ton tai (404), dang trong thung rac,
+     * hoac thuoc so huu cua tai khoan khac - ca ba deu dan toi cung mot ket
+     * luan: KHONG duoc dung thu muc nay, phai tao thu muc rieng.
+     */
+    boolean isFolderOwnedByMe(Drive drive, String folderId);
+
+    /**
+     * File nay co con DUNG CHO de ghi de len khong?
+     *
+     * Dung NGAY TRUOC updateFile() o luong day note len Drive. Kiem tra 3 dieu
+     * trong DUNG 1 lan goi API (thay cho isFileTrashed() rieng le truoc day):
+     *   - chua bi cho vao thung rac
+     *   - THUOC SO HUU cua chinh tai khoan dang dang nhap
+     *   - VAN nam trong app-folder cua tai khoan do
+     *
+     * VI SAO CAN: "drive_file_id" da luu chinh la thu duy nhat quyet dinh file
+     * nao bi ghi de, ma truoc day KHONG co gi kiem tra lai no. Mot id sai (file
+     * bi keo ra khoi thu muc, hoac von la file cua nguoi khac bi nhan nham qua
+     * thu muc chia se) se khien app am tham ghi de len file do MAI MAI - dung
+     * cung mot lop loi voi "drive_folder_id" sai vinh vien da gap 2026-08-22,
+     * chi khac la o cap FILE thay vi cap THU MUC.
+     *
+     * Tra ve false = "coi nhu file khong con dung duoc": nguoi goi tai su dung
+     * dung duong hoi phuc san co (bo driveFileId, upload lai thanh file MOI
+     * trong dung thu muc), khong can them nhanh xu ly rieng.
+     *
+     * @throws com.noted.backend.exception.DriveFileNotFoundException neu fileId khong con ton tai (404)
+     */
+    boolean isFileUsable(Drive drive, String fileId, String folderId);
 }

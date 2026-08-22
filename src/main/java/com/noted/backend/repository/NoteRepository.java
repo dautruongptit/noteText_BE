@@ -39,7 +39,12 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
     // POST /api/drive/sync-all -> 500. Nghiem trong hon: page token chi duoc luu
     // O CUOI incrementalPull() nen no KHONG BAO GIO tien len duoc, khien loi lap
     // lai VINH VIEN o moi lan bam "Dong bo ngay".
-    List<Note> findAllByDriveFileId(String driveFileId);
+    //
+    // LOC THEO userId la BAT BUOC, khong phai toi uu: 1 file Drive co the duoc
+    // tro toi boi note cua NHIEU user khac nhau (VD 2 tai khoan cung nhin thay
+    // 1 thu muc duoc chia se - bug thuc te 2026-08-22). Ban khong loc userId
+    // cho phep luot pull cua user nay SUA THANG vao note cua user khac.
+    List<Note> findAllByUserIdAndDriveFileId(Long userId, String driveFileId);
 
     // Dung cho job nen dong bo Drive: lay cac note dang cho sync, gioi han so lan retry
     List<Note> findTop50BySyncStateInAndDriveSyncAttemptsLessThanOrderByUpdatedAtAsc(

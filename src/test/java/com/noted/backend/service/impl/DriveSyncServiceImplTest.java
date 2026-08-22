@@ -61,6 +61,13 @@ class DriveSyncServiceImplTest {
         lenient().when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
         lenient().when(googleDriveService.buildClient(user)).thenReturn(drive);
         lenient().when(fileStorageService.read(anyString())).thenReturn("noi dung note");
+        // Truong hop BINH THUONG: thu muc da luu dung la cua chinh user nay.
+        // Khong co dong nay thi ensureAppFolder() se coi "folder-1" la thu muc
+        // cua NGUOI KHAC va di tao thu muc moi (xem cac test o cuoi file).
+        lenient().when(googleDriveService.isFolderOwnedByMe(drive, "folder-1")).thenReturn(true);
+        // Truong hop BINH THUONG: file dang tro toi van con dung cho de ghi de
+        // (chua vao thung rac, cua chinh minh, van trong app-folder).
+        lenient().when(googleDriveService.isFileUsable(eq(drive), anyString(), eq("folder-1"))).thenReturn(true);
     }
 
     @Test
@@ -120,7 +127,7 @@ class DriveSyncServiceImplTest {
         // khong the chi dua vao 404 (Phan 1 cua fix khong du).
         Note note = noteWithDriveFile(NOTE_ID, "trashed-file-id");
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
-        when(googleDriveService.isFileTrashed(drive, "trashed-file-id")).thenReturn(true);
+        when(googleDriveService.isFileUsable(drive, "trashed-file-id", "folder-1")).thenReturn(false);
         when(googleDriveService.uploadFile(eq(drive), eq("folder-1"), anyString(), anyString()))
                 .thenReturn(new GoogleDriveService.UploadResult("brand-new-id-not-trashed"));
 
@@ -170,10 +177,10 @@ class DriveSyncServiceImplTest {
 
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(), List.of("removed-on-drive-id"), "new-page-token"));
-        when(noteRepository.findAllByDriveFileId("removed-on-drive-id")).thenReturn(List.of(note));
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "removed-on-drive-id")).thenReturn(List.of(note));
         // self.syncNote() (goi lai NGAY sau khi danh dau dirty) se tu tim lai
         // note qua findById() - can stub rieng vi day la 1 loi goi KHAC voi
-        // findAllByDriveFileId() o tren.
+        // findAllByUserIdAndDriveFileId() o tren.
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
         // self.syncNote() se chay lai toan bo syncNoteInternal() - note.getDriveFileId()
         // luc do da duoc xoa (null) nen di vao nhanh "upload file MOI"
@@ -209,10 +216,10 @@ class DriveSyncServiceImplTest {
         when(googleDriveService.buildClient(user)).thenReturn(drive);
 
         GoogleDriveService.DriveFileInfo changedFile = new GoogleDriveService.DriveFileInfo(
-                "trashed-but-changed-id", "Note.txt", 10L, null, null, "text/plain");
+                "trashed-but-changed-id", "Note.txt", 10L, null, true, "text/plain");
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(changedFile), List.of(), "new-page-token"));
-        when(noteRepository.findAllByDriveFileId("trashed-but-changed-id")).thenReturn(List.of(note));
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "trashed-but-changed-id")).thenReturn(List.of(note));
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
         when(googleDriveService.isFileTrashed(drive, "trashed-but-changed-id")).thenReturn(true);
         when(googleDriveService.uploadFile(eq(drive), eq("folder-1"), anyString(), anyString()))
@@ -243,7 +250,7 @@ class DriveSyncServiceImplTest {
         when(googleDriveService.buildClient(user)).thenReturn(drive);
 
         GoogleDriveService.DriveFileInfo folderChange = new GoogleDriveService.DriveFileInfo(
-                "folder-1", "NotedApp", null, null, null, "application/vnd.google-apps.folder");
+                "folder-1", "NotedApp", null, null, true, "application/vnd.google-apps.folder");
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(folderChange), List.of(), "new-page-token"));
 
@@ -252,7 +259,7 @@ class DriveSyncServiceImplTest {
         // Khong duoc goi bat ky API nao lien quan den "xu ly nhu 1 note" cho folder
         verify(googleDriveService, never()).downloadFileContent(any(), anyString());
         verify(googleDriveService, never()).isFileTrashed(any(), anyString());
-        verify(noteRepository, never()).findAllByDriveFileId(anyString());
+        verify(noteRepository, never()).findAllByUserIdAndDriveFileId(any(), anyString());
     }
 
     @Test
@@ -278,7 +285,7 @@ class DriveSyncServiceImplTest {
 
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(), List.of("shared-drive-file-id"), "new-page-token"));
-        when(noteRepository.findAllByDriveFileId("shared-drive-file-id"))
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "shared-drive-file-id"))
                 .thenReturn(List.of(daXoa, conSong));
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(conSong));
         when(googleDriveService.uploadFile(eq(drive), eq("folder-1"), anyString(), anyString()))
@@ -306,7 +313,7 @@ class DriveSyncServiceImplTest {
         when(googleDriveService.buildClient(user)).thenReturn(drive);
 
         GoogleDriveService.DriveFileInfo fileMoi = new GoogleDriveService.DriveFileInfo(
-                "file-moi-tren-drive", "Thông tin Account.txt", 20L, null, null, "text/plain");
+                "file-moi-tren-drive", "Thông tin Account.txt", 20L, null, true, "text/plain");
 
         // Luot pull thu 2 duoc kich hoat NGAY GIUA luc luot thu 1 dang goi Drive -
         // day la cach tai hien "chong nhau" mot cach xac dinh (khong phu thuoc
@@ -341,5 +348,133 @@ class DriveSyncServiceImplTest {
         n.setId(id);
         n.setFilePath(USER_ID + "/" + n.getUuid() + ".txt");
         return n;
+    }
+
+    // ---------- NGHIEP VU: note cua 1 tai khoan Google CHI duoc nam trong Drive
+    // cua CHINH tai khoan do. Bug thuc te 2026-08-22: thu muc NotedApp cua
+    // dautruongptit@ tung duoc chia se (kem quyen sua) cho dautruong.dt@, nen
+    // tai khoan moi tim theo TEN thay luon thu muc do va ghi note vao Drive
+    // nguoi khac - Google khong he tu choi vi quyen sua la hop le. ----------
+
+    @Test
+    void ensureAppFolder_taoThuMucRieng_khiThuMucDaLuuKhongThuocSoHuuCuaMinh() {
+        User user = User.builder().driveConnected(true)
+                .driveFolderId("thu-muc-cua-nguoi-khac")
+                .build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        when(googleDriveService.isFolderOwnedByMe(drive, "thu-muc-cua-nguoi-khac")).thenReturn(false);
+        when(googleDriveService.ensureFolder(drive, null)).thenReturn("thu-muc-cua-chinh-toi");
+
+        String ketQua = service.ensureAppFolder(USER_ID);
+
+        assertThat(ketQua).isEqualTo("thu-muc-cua-chinh-toi");
+        assertThat(user.getDriveFolderId()).isEqualTo("thu-muc-cua-chinh-toi");
+    }
+
+    @Test
+    void ensureAppFolder_danhDauUploadLaiToanBoNote_khiPhaiDoiSangThuMucKhac() {
+        // Note dang tro toi file nam trong thu muc CU (Drive cua nguoi khac) -
+        // neu khong cat lien ket, moi lan sync sau van update() dung file do.
+        Note note = noteWithDriveFile(NOTE_ID, "file-nam-trong-drive-nguoi-khac");
+        note.setDirty(false);
+        note.setSyncState(SyncState.SYNCED);
+
+        User user = User.builder().driveConnected(true)
+                .driveFolderId("thu-muc-cua-nguoi-khac")
+                .build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        when(googleDriveService.isFolderOwnedByMe(drive, "thu-muc-cua-nguoi-khac")).thenReturn(false);
+        when(googleDriveService.ensureFolder(drive, null)).thenReturn("thu-muc-cua-chinh-toi");
+        when(noteRepository.findByUserIdAndDeletedFalseAndDriveFileIdIsNotNull(USER_ID))
+                .thenReturn(List.of(note));
+
+        service.ensureAppFolder(USER_ID);
+
+        assertThat(note.getDriveFileId()).isNull();
+        assertThat(note.isDirty()).isTrue();
+        assertThat(note.getSyncState()).isEqualTo(SyncState.PENDING_DRIVE);
+    }
+
+    @Test
+    void ensureAppFolder_giuNguyen_khiThuMucDaLuuDungLaCuaMinh() {
+        User user = User.builder().driveConnected(true).driveFolderId("thu-muc-cua-chinh-toi").build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        when(googleDriveService.isFolderOwnedByMe(drive, "thu-muc-cua-chinh-toi")).thenReturn(true);
+
+        String ketQua = service.ensureAppFolder(USER_ID);
+
+        assertThat(ketQua).isEqualTo("thu-muc-cua-chinh-toi");
+        // Khong duoc dong toi note nao, cung khong tao thu muc moi
+        verify(googleDriveService, never()).ensureFolder(any(), any());
+        verify(noteRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void ensureAppFolder_chiGoiDriveApiMotLan_choNhieuLanGoiLienTiep() {
+        // Xac minh quyen so huu la 1 lan goi Drive API - ensureAppFolder() duoc
+        // goi o MOI lan sync tung note, nen phai duoc nho lai sau lan dau.
+        User user = User.builder().driveConnected(true).driveFolderId("thu-muc-cua-chinh-toi").build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        when(googleDriveService.isFolderOwnedByMe(drive, "thu-muc-cua-chinh-toi")).thenReturn(true);
+
+        service.ensureAppFolder(USER_ID);
+        service.ensureAppFolder(USER_ID);
+        service.ensureAppFolder(USER_ID);
+
+        verify(googleDriveService, times(1)).isFolderOwnedByMe(drive, "thu-muc-cua-chinh-toi");
+    }
+
+    @Test
+    void pullFromDrive_boQuaFile_khiFileNamTrongAppFolderNhungThuocSoHuuNguoiKhac() {
+        // Thu muc CUA TOI van co the chua file CUA NGUOI KHAC neu toi da chia
+        // se thu muc kem quyen sua. Khong duoc nhan chung thanh note cua minh.
+        User user = User.builder().driveConnected(true).driveFolderId("folder-1")
+                .driveChangesPageToken("existing-page-token")
+                .build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+
+        GoogleDriveService.DriveFileInfo fileNguoiKhac = new GoogleDriveService.DriveFileInfo(
+                "file-cua-nguoi-khac", "Note cua ho.txt", 10L, null, false, "text/plain");
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(fileNguoiKhac), List.of(), "new-page-token"));
+
+        service.pullFromDrive(USER_ID);
+
+        // Khong duoc tai noi dung ve, khong duoc tra DB, va tuyet doi khong tao note
+        verify(googleDriveService, never()).downloadFileContent(any(), anyString());
+        verify(noteRepository, never()).findAllByUserIdAndDriveFileId(any(), anyString());
+        verify(noteRepository, never()).save(any(Note.class));
+        // Van phai tien page token - bo qua 1 file khong phai la loi
+        assertThat(user.getDriveChangesPageToken()).isEqualTo("new-page-token");
+    }
+
+    @Test
+    void pullFromDrive_traNoteTheoDUNGUserId_khongDungChungDriveFileIdVoiUserKhac() {
+        // Cung 1 file Drive co the duoc tro toi boi note cua NHIEU user (2 tai
+        // khoan cung nhin thay 1 thu muc chia se). Neu tra note khong loc userId,
+        // luot pull cua user nay se sua thang vao note cua user khac.
+        User user = User.builder().driveConnected(true).driveFolderId("folder-1")
+                .driveChangesPageToken("existing-page-token")
+                .build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(), List.of("file-dung-chung"), "new-page-token"));
+
+        service.pullFromDrive(USER_ID);
+
+        // Phai hoi DB kem userId - khong duoc hoi bang moi drive_file_id
+        verify(noteRepository).findAllByUserIdAndDriveFileId(USER_ID, "file-dung-chung");
     }
 }
