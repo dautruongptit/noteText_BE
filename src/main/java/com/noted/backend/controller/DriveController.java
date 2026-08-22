@@ -54,6 +54,9 @@ public class DriveController {
     @Value("${app.drive.app-folder-name}")
     private String appFolderName;
 
+    @Value("${app.drive.oauth-scope}")
+    private String driveOauthScope;
+
     @Value("${app.drive.redirect-uri}")
     private String driveRedirectUri;
 
@@ -87,14 +90,12 @@ public class DriveController {
                 .queryParam("response_type", "code")
                 .queryParam("access_type", "offline")
                 .queryParam("prompt", "consent") // dam bao GAN NHU luon nhan duoc refresh_token (xem GoogleTokenExchangeServiceImpl)
-                // "drive" day du (khong con "drive.file") - de app thay duoc
-                // ca file nguoi dung tu tay them vao thu muc NotedApp tren
-                // Drive, khong chi file CHINH app tao ra (xem giai thich chi
-                // tiet trong application.yml canh scope tuong tu cua luong
-                // login). Nguoi dung DA KET NOI Drive tu truoc (luc con scope
-                // "drive.file") PHAI ngat ket noi roi ket noi lai de duoc cap
-                // quyen moi - refresh_token cu KHONG tu dong co quyen rong hon.
-                .queryParam("scope", "https://www.googleapis.com/auth/drive")
+                // Scope doc tu cau hinh (app.drive.oauth-scope), KHONG viet cung:
+                // luong nay va luong dang nhap o application.yml PHAI luon dung
+                // cung 1 gia tri, ma truoc day moi cho ghi rieng nen da tung lech
+                // nhau. Xem giai thich day du ve 2 lua chon scope trong
+                // application.yml canh "oauth-scope".
+                .queryParam("scope", driveOauthScope)
                 .queryParam("state", state)
                 .build()
                 .encode()
