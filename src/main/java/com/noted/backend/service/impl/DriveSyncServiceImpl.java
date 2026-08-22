@@ -121,6 +121,20 @@ public class DriveSyncServiceImpl implements DriveSyncService {
     // sang khoa phan tan (VD Redis SETNX), giong pattern da ghi chu o TokenBucket.java.
     private final Set<Long> syncingNoteIds = ConcurrentHashMap.newKeySet();
 
+    // Khoa tuong tu nhung cho CA LUOT PULL cua 1 user. Bug thuc te 2026-08-22:
+    // Drive chi co 1 file "Thong tin Account.txt" nhung app hien 2 note trung
+    // het (cung drive_file_id, cung created_at den tung giay - xem note 108/109
+    // va 84/85). Nguyen nhan: FE co TOI 3 duong deu goi POST /api/drive/sync-all
+    // (nut "Dong bo ngay", auto-sync 2.5s sau khi luu, va flush luc dong tab),
+    // khong duong nao chan duoc duong kia. Hai luot pull chay chong nhau cung
+    // hoi "co note nao dang giu drive_file_id nay khong?" -> CA HAI deu thay
+    // chua co -> CA HAI cung tao note moi.
+    //
+    // Bo qua (khong xep hang doi) luot pull den sau la dung y do: no se doc ra
+    // dung ket qua ma luot dang chay sap ghi, nen chay them khong mang lai gi.
+    // Giong syncingNoteIds: chi dung tren 1 instance backend duy nhat.
+    private final Set<Long> pullingUserIds = ConcurrentHashMap.newKeySet();
+
     @Value("${app.drive.app-folder-name}")
     private String appFolderName;
 
@@ -320,18 +334,29 @@ public class DriveSyncServiceImpl implements DriveSyncService {
     @Override
     @Transactional
     public void pullFromDrive(Long userId) {
-        User user = userRepository.findById(userId).orElseThrow();
-        if (!user.isDriveConnected()) {
-            return; // chua ket noi Drive, khong co gi de pull
+        // Xem javadoc cua "pullingUserIds": chan 2 luot pull chay chong nhau
+        // cho cung 1 user - day chinh la thu tao ra note trung y het nhau.
+        if (!pullingUserIds.add(userId)) {
+            log.debug("User {} dang co 1 luot pull Drive chay do, bo qua lenh trung lap nay", userId);
+            return;
         }
 
-        String folderId = ensureAppFolder(userId);
-        Drive drive = googleDriveService.buildClient(user);
+        try {
+            User user = userRepository.findById(userId).orElseThrow();
+            if (!user.isDriveConnected()) {
+                return; // chua ket noi Drive, khong co gi de pull
+            }
 
-        if (user.getDriveChangesPageToken() == null) {
-            bootstrapPull(userId, user, drive, folderId);
-        } else {
-            incrementalPull(userId, user, drive, folderId);
+            String folderId = ensureAppFolder(userId);
+            Drive drive = googleDriveService.buildClient(user);
+
+            if (user.getDriveChangesPageToken() == null) {
+                bootstrapPull(userId, user, drive, folderId);
+            } else {
+                incrementalPull(userId, user, drive, folderId);
+            }
+        } finally {
+            pullingUserIds.remove(userId);
         }
     }
 
@@ -423,9 +448,19 @@ public class DriveSyncServiceImpl implements DriveSyncService {
         // luc do note con dang syncState=SYNCED/dirty=false (chua ai danh dau
         // dirty ca) nen bi bo qua hoan toan o buoc push.
         for (String removedFileId : changes.removedFileIds()) {
-            noteRepository.findByDriveFileId(removedFileId)
-                    .filter(note -> !note.isDeleted()) // note cung da bi xoa o local - khong can lam gi them
-                    .ifPresent(note -> markNoteNeedsReupload(note, "Drive bao removed/mat quyen"));
+            // Best-effort theo tung id - giong hai vong lap phia tren. Truoc day
+            // vong lap nay KHONG duoc bao ve, nen chi 1 id "xau" (VD trung
+            // drive_file_id giua 2 note, xem NoteRepository.findAllByDriveFileId)
+            // la lam sap ca POST /api/drive/sync-all va chan luon buoc luu page
+            // token o cuoi -> loi lap lai vinh vien.
+            try {
+                for (Note note : noteRepository.findAllByDriveFileId(removedFileId)) {
+                    if (note.isDeleted()) continue; // note cung da bi xoa o local - khong can lam gi them
+                    markNoteNeedsReupload(note, "Drive bao removed/mat quyen");
+                }
+            } catch (Exception e) {
+                log.warn("Xu ly file Drive da bi xoa (id={}) that bai cho userId={}", removedFileId, userId, e);
+            }
         }
 
         if (changes.newPageToken() != null) {
@@ -467,7 +502,16 @@ public class DriveSyncServiceImpl implements DriveSyncService {
             return;
         }
 
-        Note note = noteRepository.findByDriveFileId(driveFile.id()).orElse(null);
+        // Co the co NHIEU note cung tro toi 1 drive_file_id (xem javadoc
+        // findAllByDriveFileId). Uu tien ban CHUA bi xoa - dung ban dang thuc su
+        // hien trong app; neu tat ca deu da bi xoa thi giu nguyen hanh vi cu
+        // (bo qua, cho purge) chu KHONG tao lai note moi tu file Drive do.
+        List<Note> matches = noteRepository.findAllByDriveFileId(driveFile.id());
+        Note note = matches.stream().filter(n -> !n.isDeleted()).findFirst().orElse(null);
+
+        if (note == null && !matches.isEmpty()) {
+            return; // cho purge - khong can pull ve nua
+        }
 
         if (note == null) {
             // File "la" - khong tim thay note local nao khop drive_file_id nay
@@ -493,10 +537,6 @@ public class DriveSyncServiceImpl implements DriveSyncService {
 
             noteRepository.save(created);
             return;
-        }
-
-        if (note.isDeleted()) {
-            return; // cho purge - khong can pull ve nua
         }
 
         // Kiem tra TRASHED truoc tien - ke ca khi note KHONG dirty (VD Changes

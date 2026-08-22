@@ -28,9 +28,18 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
     Optional<Note> findByUuid(String uuid);
 
     // Dung cho luong PULL (Drive -> local, xem DriveSyncServiceImpl.pullFromDrive):
-    // doi chieu file tren Drive voi note local DUY NHAT qua drive_file_id -
-    // KHONG BAO GIO doi chieu qua display_name (Drive cho phep trung ten).
-    Optional<Note> findByDriveFileId(String driveFileId);
+    // doi chieu file tren Drive voi note local qua drive_file_id - KHONG BAO GIO
+    // doi chieu qua display_name (Drive cho phep trung ten).
+    //
+    // TRA VE LIST chu KHONG PHAI Optional: drive_file_id KHONG co rang buoc UNIQUE
+    // trong DB va thuc te DA co du lieu 2 note khac nhau cung tro toi 1 file Drive
+    // (bug thuc te 2026-08-22: note 84 va 85 cung giu "1JDHLzJa..."). Khi do ban
+    // Optional cu nem IncorrectResultSizeDataAccessException, va vi no bi nem o
+    // vong lap removedFileIds (khong nam trong try/catch nao) nen lam SAP toan bo
+    // POST /api/drive/sync-all -> 500. Nghiem trong hon: page token chi duoc luu
+    // O CUOI incrementalPull() nen no KHONG BAO GIO tien len duoc, khien loi lap
+    // lai VINH VIEN o moi lan bam "Dong bo ngay".
+    List<Note> findAllByDriveFileId(String driveFileId);
 
     // Dung cho job nen dong bo Drive: lay cac note dang cho sync, gioi han so lan retry
     List<Note> findTop50BySyncStateInAndDriveSyncAttemptsLessThanOrderByUpdatedAtAsc(

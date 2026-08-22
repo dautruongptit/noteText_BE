@@ -1,0 +1,16 @@
+-- Chan tan goc chuyen "1 file tren Drive nhung app hien 2 note" (bao cao thuc
+-- te 2026-08-22: cap note 84/85 va 108/109, moi cap cung drive_file_id va duoc
+-- tao trong CUNG 1 giay). Nguyen nhan da duoc sua o tang code bang khoa
+-- "pullingUserIds" trong DriveSyncServiceImpl - rang buoc nay la luoi an toan
+-- thu hai: du sau nay co them duong nao goi pullFromDrive() ma quen khoa, DB
+-- se tu tu choi thay vi lang le tao them ban trung.
+--
+-- MySQL cho phep NHIEU dong cung mang gia tri NULL trong 1 UNIQUE index, nen
+-- rang buoc nay KHONG anh huong gi toi note chua tung sync (drive_file_id NULL) -
+-- ke ca note moi tao lan ban sao xung dot (createConflictCopy cung de NULL).
+--
+-- LUU Y khi chay tren moi truong da co du lieu: migration nay se THAT BAI neu
+-- van con drive_file_id trung. Phai don truoc bang cach GO drive_file_id cua
+-- ban thua (SET drive_file_id = NULL) chu KHONG xoa note - go xong thi note do
+-- khong con tro toi file Drive nua, nen co xoa han cung khong dung toi file goc.
+ALTER TABLE notes ADD CONSTRAINT uq_notes_drive_file_id UNIQUE (drive_file_id);

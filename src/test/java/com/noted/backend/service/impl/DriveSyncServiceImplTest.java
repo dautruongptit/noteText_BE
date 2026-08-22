@@ -20,6 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -169,10 +170,10 @@ class DriveSyncServiceImplTest {
 
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(), List.of("removed-on-drive-id"), "new-page-token"));
-        when(noteRepository.findByDriveFileId("removed-on-drive-id")).thenReturn(Optional.of(note));
+        when(noteRepository.findAllByDriveFileId("removed-on-drive-id")).thenReturn(List.of(note));
         // self.syncNote() (goi lai NGAY sau khi danh dau dirty) se tu tim lai
         // note qua findById() - can stub rieng vi day la 1 loi goi KHAC voi
-        // findByDriveFileId() o tren.
+        // findAllByDriveFileId() o tren.
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
         // self.syncNote() se chay lai toan bo syncNoteInternal() - note.getDriveFileId()
         // luc do da duoc xoa (null) nen di vao nhanh "upload file MOI"
@@ -211,7 +212,7 @@ class DriveSyncServiceImplTest {
                 "trashed-but-changed-id", "Note.txt", 10L, null, null, "text/plain");
         when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
                 new GoogleDriveService.ChangesResult(List.of(changedFile), List.of(), "new-page-token"));
-        when(noteRepository.findByDriveFileId("trashed-but-changed-id")).thenReturn(Optional.of(note));
+        when(noteRepository.findAllByDriveFileId("trashed-but-changed-id")).thenReturn(List.of(note));
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
         when(googleDriveService.isFileTrashed(drive, "trashed-but-changed-id")).thenReturn(true);
         when(googleDriveService.uploadFile(eq(drive), eq("folder-1"), anyString(), anyString()))
@@ -251,7 +252,80 @@ class DriveSyncServiceImplTest {
         // Khong duoc goi bat ky API nao lien quan den "xu ly nhu 1 note" cho folder
         verify(googleDriveService, never()).downloadFileContent(any(), anyString());
         verify(googleDriveService, never()).isFileTrashed(any(), anyString());
-        verify(noteRepository, never()).findByDriveFileId(anyString());
+        verify(noteRepository, never()).findAllByDriveFileId(anyString());
+    }
+
+    @Test
+    void pullFromDrive_vanChayXongVaLuuPageToken_khiNhieuNoteTrungCungDriveFileId() {
+        // Bug thuc te 2026-08-22: DB co 2 note (84, 85) cung giu 1 drive_file_id.
+        // Ban cu dung Optional<Note> findByDriveFileId() -> nem
+        // IncorrectResultSizeDataAccessException NGAY trong vong lap removedFileIds
+        // (khong co try/catch) -> ca POST /api/drive/sync-all tra 500. Nang hon:
+        // page token chi duoc luu O CUOI incrementalPull() nen KHONG BAO GIO tien
+        // len, khien moi lan bam "Dong bo ngay" deu lap lai dung loi do vinh vien.
+        Note daXoa = noteWithDriveFile(99L, "shared-drive-file-id");
+        daXoa.setDeleted(true);
+        Note conSong = noteWithDriveFile(NOTE_ID, "shared-drive-file-id");
+        conSong.setDirty(false);
+        conSong.setSyncState(SyncState.SYNCED);
+
+        User user = User.builder().driveConnected(true).driveFolderId("folder-1")
+                .driveChangesPageToken("existing-page-token")
+                .build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(), List.of("shared-drive-file-id"), "new-page-token"));
+        when(noteRepository.findAllByDriveFileId("shared-drive-file-id"))
+                .thenReturn(List.of(daXoa, conSong));
+        when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(conSong));
+        when(googleDriveService.uploadFile(eq(drive), eq("folder-1"), anyString(), anyString()))
+                .thenReturn(new GoogleDriveService.UploadResult("brand-new-drive-file-id"));
+
+        service.pullFromDrive(USER_ID);
+
+        // Note con song duoc hoi sinh binh thuong; note da xoa bi bo qua (khong
+        // upload lai ban da xoa len Drive).
+        assertThat(conSong.getDriveFileId()).isEqualTo("brand-new-drive-file-id");
+        assertThat(daXoa.getDriveFileId()).isEqualTo("shared-drive-file-id");
+        // QUAN TRONG NHAT: page token PHAI tien len - day la thu chan vong lap loi vinh vien.
+        assertThat(user.getDriveChangesPageToken()).isEqualTo("new-page-token");
+    }
+
+    @Test
+    void pullFromDrive_khongTaoNoteTrung_khiHaiLuotPullChayChongNhau() throws Exception {
+        // Bug thuc te 2026-08-22: Drive chi co 1 file "Thong tin Account.txt"
+        // nhung app hien 2 note y het (note 108/109: cung drive_file_id, cung
+        // created_at den tung giay). Hai luot pull chay chong nhau cung thay
+        // "chua co note nao giu drive_file_id nay" nen ca hai cung tao note moi.
+        User user = User.builder().driveConnected(true).driveFolderId("folder-1").build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+
+        GoogleDriveService.DriveFileInfo fileMoi = new GoogleDriveService.DriveFileInfo(
+                "file-moi-tren-drive", "Thông tin Account.txt", 20L, null, null, "text/plain");
+
+        // Luot pull thu 2 duoc kich hoat NGAY GIUA luc luot thu 1 dang goi Drive -
+        // day la cach tai hien "chong nhau" mot cach xac dinh (khong phu thuoc
+        // vao viec 2 thread co that su giao nhau hay khong).
+        CountDownLatch daGoiLanHai = new CountDownLatch(1);
+        when(googleDriveService.listFilesInFolder(drive, "folder-1")).thenAnswer(inv -> {
+            service.pullFromDrive(USER_ID); // luot thu 2, tai dung luc luot 1 chua xong
+            daGoiLanHai.countDown();
+            return List.of(fileMoi);
+        });
+        when(googleDriveService.downloadFileContent(drive, "file-moi-tren-drive")).thenReturn("noi dung");
+        when(fileStorageService.buildRelativePath(eq(USER_ID), anyString())).thenReturn("1/note.txt");
+        when(fileStorageService.writeAtomic(anyString(), anyString())).thenReturn(8L);
+
+        service.pullFromDrive(USER_ID);
+
+        assertThat(daGoiLanHai.getCount()).isZero(); // chac chan luot thu 2 DA chay
+        // Chi duoc tao DUNG 1 note - truoc ban fix la 2.
+        verify(noteRepository, times(1)).save(any(Note.class));
     }
 
     // ---------- helpers ----------
