@@ -346,7 +346,17 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         }
 
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            drive.files().get(fileId).executeMediaAndDownloadTo(out);
+            // Bug thuc te 2026-08-22: file 0 byte tren Drive (VD note rong vua tao)
+            // bi loi "416 Requested range not satisfiable". MediaHttpDownloader MAC
+            // DINH tai theo kieu resumable/chunked - LUON gan header "Range:
+            // bytes=0-33554431" (chunkSize 32MB) ngay ca cho request DAU TIEN; voi
+            // file 0 byte khong co byte nao thoa man range do nen Drive tra 416 thay
+            // vi 200 rong. Bat "direct download" de tai TRON VEN trong 1 request
+            // DUY NHAT, khong gan header Range - day la cach chinh thuc Google
+            // khuyen dung cho truong hop nay (xem MediaHttpDownloader.download()).
+            Drive.Files.Get getRequest = drive.files().get(fileId);
+            getRequest.getMediaHttpDownloader().setDirectDownloadEnabled(true);
+            getRequest.executeMediaAndDownloadTo(out);
             return out.toString(StandardCharsets.UTF_8);
         } catch (Exception e) {
             log.warn("Tai noi dung file Drive (id={}) that bai", fileId, e);

@@ -107,6 +107,14 @@
             <artifactId>google-oauth-client</artifactId>
             <version>1.36.0</version>
         </dependency>
+        <dependency>
+            <!-- MockHttpTransport - de test downloadFileContent() gia lap phan hoi
+                 HTTP tu Drive (VD 416) ma khong goi mang that -->
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client-test</artifactId>
+            <version>1.44.2</version>
+            <scope>test</scope>
+        </dependency>
 
         <!-- Lombok -->
         <dependency>

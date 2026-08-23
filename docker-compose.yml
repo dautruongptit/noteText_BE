@@ -1,51 +1,34 @@
 version: "3.8"
 
 networks:
-  dev-network:
-    external: true   # da tao san bang: docker network create dev-network
+  # mysql8 KHONG duoc quan ly boi file compose nay - no la container co san,
+  # da noi san vao shared-network tu truoc (docker network create shared-network
+  # + docker network connect shared-network mysql8). Compose chi tao them
+  # noted-backend va noi vao CUNG network nay de goi duoc mysql8 qua DNS noi
+  # bo cua Docker (host "mysql8"), khong can IP/Tailscale nua.
+  shared-network:
+    external: true
 
 services:
-  mysql8:
-    image: mysql:8.0
-    container_name: mysql8
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      # QUAN TRONG: dung CHUNG bien DB_PASSWORD/DB_NAME voi service noted-backend
-      # ben duoi - truoc day 2 noi hard-code RIENG RE nhau (mysql8 luon la
-      # "1234567890" bat ke .env noi gi), doi DB_PASSWORD trong .env.production
-      # se lam backend KHONG CON KET NOI DUOC vao DB (sai mat khau). Da sua.
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-1234567890}
-      MYSQL_DATABASE: ${DB_NAME:-noted_db}
-    # Luu y production: expose thang port 3306 ra host co the khong an toan
-    # neu server co IP cong khai - can nhac gioi han qua firewall/security
-    # group, hoac bo hoan toan phan "ports" nay (backend van ket noi duoc qua
-    # dev-network noi bo ma khong can mo port 3306 ra ngoai).
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - dev-network
-
   noted-backend:
     build: .
     container_name: noted-backend
     restart: unless-stopped
-    depends_on:
-      - mysql8
     env_file:
       - .env
     environment:
       # QUAN TRONG: dung ${VAR:-default} (khong hard-code gia tri thang) de
       # noi dung THAT trong .env (copy tu .env.development hoac .env.production)
       # duoc uu tien dung - Docker Compose uu tien "environment:" cao hon
-      # "env_file:", nen neu ghi thang "1234567890" o day, no se GHI DE moi
-      # gia tri DB_PASSWORD khac trong .env.production, du ban co doi gi
-      # trong do cung vo ich (day la loi da phat hien va sua o day).
-      DB_HOST: ${DB_HOST:-mysql8}
-      DB_NAME: ${DB_NAME:-noted_db}
+      # "env_file:", nen neu ghi thang gia tri o day, no se GHI DE moi gia
+      # tri khac trong .env, du ban co doi gi trong do cung vo ich.
+      #
+      # DB_URL dung ten host "mysql8" (KHONG phai IP hay 127.0.0.1) - day la
+      # ten container mysql8 co san tren shared-network, Docker DNS noi bo se
+      # tu phan giai ten nay sang IP that cua no. application.yml CHI doc
+      # DB_URL/DB_USER/DB_PASSWORD (khong doc DB_HOST/DB_NAME), nen bat buoc
+      # phai ghep san thanh URL day du o day.
+      DB_URL: "jdbc:mysql://mysql8:3306/${DB_NAME:-note_text}?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true"
       DB_USER: ${DB_USER:-root}
       DB_PASSWORD: ${DB_PASSWORD:-1234567890}
       SERVER_PORT: ${SERVER_PORT:-8084}
@@ -55,7 +38,4 @@ services:
       # Thu muc luu file that tren Ubuntu host, mount vao container
       - /data/noted/notes:/data/noted/notes
     networks:
-      - dev-network
-
-volumes:
-  mysql_data:
+      - shared-network
