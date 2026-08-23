@@ -1,6 +1,6 @@
 server:
   port: ${SERVER_PORT:8084}
-
+  forward-headers-strategy: framework
 spring:
   application:
     name: noted-backend
@@ -50,7 +50,7 @@ spring:
               # Changes API gio bao thay doi cua CA DRIVE, khong con tu dong
               # gioi han trong pham vi app nhu luc con dung drive.file.
               - https://www.googleapis.com/auth/drive
-            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            redirect-uri: "{baseUrl}/login/oauth2/code/google"
             authorization-grant-type: authorization_code
         provider:
           google:
