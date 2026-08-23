@@ -13,7 +13,7 @@ public class NotedBackendApplication {
 
     public static void main(String[] args) {
         Dotenv dotenv = Dotenv.configure()
-                .filename(".env.development") // Chỉ định đúng tên file của bạn (.env.dev)
+                .filename(".env") // khop voi file THAT su dung (README: cp .env.example -> .env)
                 .ignoreIfMissing()    // Tránh lỗi nếu file không tồn tại ở môi trường Prod
                 .load();
 
