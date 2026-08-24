@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
  * ===== md5Checksum - toi uu tranh upload thua =====
  * Truoc khi goi updateFile() cho note DA CO driveFileId, so sanh MD5 cua noi
  * dung local (HashUtil.md5) voi "md5Checksum" ma CHINH GOOGLE DRIVE da tinh
- * san cho file do (GoogleDriveService.getFileChecksum) - neu KHOP NHAU (noi
+ * san cho file do (GoogleDriveService.getFileMeta) - neu KHOP NHAU (noi
  * dung thuc su khong doi tren Drive, VD note bi sua roi sua lai ve y het cu
  * truoc khi kip debounce), BO QUA update(), tranh goi API + lam modifiedTime
  * tren Drive nhay vo ich.
@@ -277,14 +277,30 @@ public class DriveSyncServiceImpl implements DriveSyncService {
                             new IllegalStateException("File khong con dung cho de ghi de"));
                 }
 
-                // Toi uu bang md5Checksum TRUOC KHI update(): neu noi dung
-                // local KHOP HOAN TOAN voi noi dung dang co tren Drive, bo qua
-                // goi API (tranh upload thua).
+                // Doi chieu CA HAI thu voi ban tren Drive truoc khi day len:
+                // noi dung (md5) VA ten file. Truoc day chi doi chieu md5, va
+                // do la nguyen nhan loi "doi ten trong app nhung Drive giu ten
+                // cu" (bao cao thuc te 2026-08-24): doi ten khong lam doi noi
+                // dung nen md5 van khop -> bo qua update() -> ma ten file lai
+                // CHI duoc gui di ben trong chinh loi goi update() do. Te hon,
+                // markSynced() ngay sau day xoa co dirty nen khong bao gio
+                // thu lai - ten cu ket lai vinh vien tren Drive.
                 String localMd5 = HashUtil.md5(content);
-                String remoteMd5 = googleDriveService.getFileChecksum(drive, note.getDriveFileId());
+                GoogleDriveService.DriveFileMeta remote =
+                        googleDriveService.getFileMeta(drive, note.getDriveFileId());
 
-                if (remoteMd5 != null && remoteMd5.equalsIgnoreCase(localMd5)) {
-                    log.debug("Note {} noi dung khop md5Checksum voi Drive, bo qua update() thua", noteId);
+                // null = khong lay duoc sieu du lieu -> coi nhu "khac", cu day
+                // len cho chac (an toan hon la bo qua nham).
+                boolean noiDungKhop = remote.md5Checksum() != null
+                        && remote.md5Checksum().equalsIgnoreCase(localMd5);
+                boolean tenKhop = note.getDisplayName().equals(remote.name());
+
+                if (noiDungKhop && tenKhop) {
+                    log.debug("Note {} khop ca noi dung lan ten voi Drive, khong can day len", noteId);
+                } else if (noiDungKhop) {
+                    // CHI ten doi -> sua moi sieu du lieu, khong tai lai noi dung
+                    googleDriveService.renameFile(drive, note.getDriveFileId(), note.getDisplayName());
+                    log.info("Note {} doi ten tren Drive thanh '{}'", noteId, note.getDisplayName());
                 } else {
                     // LUON update() dung fileId co san, KHONG BAO GIO tao file
                     // moi cho note da co driveFileId - TRU KHI fileId do khong
@@ -618,7 +634,7 @@ public class DriveSyncServiceImpl implements DriveSyncService {
             return;
         }
 
-        String remoteMd5 = googleDriveService.getFileChecksum(drive, driveFile.id());
+        String remoteMd5 = googleDriveService.getFileMeta(drive, driveFile.id()).md5Checksum();
 
         if (note.isDirty()) {
             // Local dang co sua CHUA kip day len Drive. Truoc day: luon BO QUA

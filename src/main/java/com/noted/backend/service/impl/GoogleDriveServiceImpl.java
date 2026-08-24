@@ -389,18 +389,18 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
     }
 
     @Override
-    public String getFileChecksum(Drive drive, String fileId) {
-        if (!StringUtils.hasText(fileId)) return null;
+    public DriveFileMeta getFileMeta(Drive drive, String fileId) {
+        if (!StringUtils.hasText(fileId)) return new DriveFileMeta(null, null);
         try {
-            File file = drive.files().get(fileId).setFields("md5Checksum").execute();
-            return file.getMd5Checksum();
+            File file = drive.files().get(fileId).setFields("md5Checksum, name").execute();
+            return new DriveFileMeta(file.getMd5Checksum(), file.getName());
         } catch (Exception e) {
             // Khong throw - day chi la buoc TOI UU (bo qua update thua), neu
             // khong lay duoc checksum (VD file da bi nguoi dung tu xoa tren
             // Drive) thi coi nhu "khong biet", nguoi goi se cu update() binh
             // thuong (an toan hon la chan ca luong sync vi 1 buoc toi uu that bai).
-            log.debug("Khong lay duoc md5Checksum cho file Drive (id={}): {}", fileId, e.getMessage());
-            return null;
+            log.debug("Khong lay duoc sieu du lieu file Drive (id={}): {}", fileId, e.getMessage());
+            return new DriveFileMeta(null, null);
         }
     }
 
@@ -486,6 +486,30 @@ public class GoogleDriveServiceImpl implements GoogleDriveService {
         } catch (Exception e) {
             log.warn("Kiem tra file Drive (id={}) that bai", fileId, e);
             throw new GoogleDriveOperationException("Khong the kiem tra file tren Google Drive (id=" + fileId + ")", e);
+        }
+    }
+
+    @Override
+    public void renameFile(Drive drive, String fileId, String newName) {
+        if (!StringUtils.hasText(fileId)) {
+            throw new IllegalArgumentException("fileId khong duoc de trong khi doi ten");
+        }
+        if (!StringUtils.hasText(newName)) {
+            throw new IllegalArgumentException("Ten moi khong duoc de trong");
+        }
+        try {
+            // update() KHONG kem media content -> Drive chi sua sieu du lieu,
+            // khong tao phien ban noi dung moi va khong ton bang thong.
+            drive.files().update(fileId, new File().setName(newName)).execute();
+        } catch (GoogleJsonResponseException e) {
+            if (e.getStatusCode() == 404) {
+                throw new DriveFileNotFoundException(fileId, e);
+            }
+            log.warn("Doi ten file Drive (id={}) thanh '{}' that bai", fileId, newName, e);
+            throw new GoogleDriveOperationException("Khong the doi ten file tren Google Drive (id=" + fileId + ")", e);
+        } catch (Exception e) {
+            log.warn("Doi ten file Drive (id={}) thanh '{}' that bai", fileId, newName, e);
+            throw new GoogleDriveOperationException("Khong the doi ten file tren Google Drive (id=" + fileId + ")", e);
         }
     }
 }

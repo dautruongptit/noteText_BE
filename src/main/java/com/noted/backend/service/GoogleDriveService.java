@@ -135,7 +135,27 @@ public interface GoogleDriveService {
      * kiem Drive API call + khong lam "modifiedTime" tren Drive nhay vo ich).
      * Tra ve null neu file khong ton tai/khong lay duoc checksum.
      */
-    String getFileChecksum(Drive drive, String fileId);
+    /**
+     * Sieu du lieu can de quyet dinh CO PHAI day gi len Drive khong.
+     * Lay ca md5 VA ten trong DUNG 1 lan goi API - truoc day chi lay md5, va
+     * do la nguyen nhan loi "doi ten trong app nhung tren Drive van ten cu"
+     * (bao cao thuc te 2026-08-24): doi ten khong lam doi noi dung nen md5 van
+     * khop, buoc toi uu tuong "khong co gi thay doi" va bo qua luon update(),
+     * ma ten file lai chi duoc gui di BEN TRONG chinh loi goi update() do.
+     *
+     * md5Checksum/name co the null neu khong lay duoc (file da bi xoa, mat
+     * mang...) - nguoi goi coi nhu "khong biet" va cu day len binh thuong.
+     */
+    record DriveFileMeta(String md5Checksum, String name) {}
+
+    DriveFileMeta getFileMeta(Drive drive, String fileId);
+
+    /**
+     * Doi MOI ten file, KHONG dung toi noi dung - dung khi nguoi dung chi doi
+     * ten note. Re hon han updateFile() vi khong phai tai lai toan bo noi dung
+     * len, va cung khong lam thay doi phien ban noi dung tren Drive.
+     */
+    void renameFile(Drive drive, String fileId, String newName);
 
     /**
      * File co dang nam trong THUNG RAC Drive hay khong - KHAC HOAN TOAN voi

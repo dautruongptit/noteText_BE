@@ -76,7 +76,8 @@ class DriveSyncServiceImplTest {
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
         // md5Checksum tra ve null (khong lay duoc, hop ly cho file da xoa) ->
         // syncNoteInternal se van thu updateFile() nhu binh thuong truoc.
-        when(googleDriveService.getFileChecksum(drive, "old-drive-file-id-da-bi-xoa")).thenReturn(null);
+        when(googleDriveService.getFileMeta(drive, "old-drive-file-id-da-bi-xoa"))
+                .thenReturn(new GoogleDriveService.DriveFileMeta(null, null));
         // updateFile() voi fileId cu NEM DriveFileNotFoundException (404 that su tu Drive)
         doThrow(new DriveFileNotFoundException("old-drive-file-id-da-bi-xoa", new RuntimeException("404")))
                 .when(googleDriveService).updateFile(eq(drive), eq("old-drive-file-id-da-bi-xoa"), anyString(), anyString());
@@ -100,7 +101,8 @@ class DriveSyncServiceImplTest {
     void syncNote_baoLoiBinhThuong_khiUploadLaiSauKhiPhatHienFileMatCungThatBai() {
         Note note = noteWithDriveFile(NOTE_ID, "old-drive-file-id-da-bi-xoa");
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
-        when(googleDriveService.getFileChecksum(drive, "old-drive-file-id-da-bi-xoa")).thenReturn(null);
+        when(googleDriveService.getFileMeta(drive, "old-drive-file-id-da-bi-xoa"))
+                .thenReturn(new GoogleDriveService.DriveFileMeta(null, null));
         doThrow(new DriveFileNotFoundException("old-drive-file-id-da-bi-xoa", new RuntimeException("404")))
                 .when(googleDriveService).updateFile(eq(drive), eq("old-drive-file-id-da-bi-xoa"), anyString(), anyString());
         // Upload lai CUNG that bai (VD mat mang giua chung)
@@ -145,7 +147,8 @@ class DriveSyncServiceImplTest {
     void syncNote_updateBinhThuong_khiFileDriveVanConTonTai() {
         Note note = noteWithDriveFile(NOTE_ID, "still-valid-file-id");
         when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
-        when(googleDriveService.getFileChecksum(drive, "still-valid-file-id")).thenReturn("different-md5");
+        when(googleDriveService.getFileMeta(drive, "still-valid-file-id"))
+                .thenReturn(new GoogleDriveService.DriveFileMeta("different-md5", "note.txt"));
 
         service.syncNote(NOTE_ID);
 
@@ -476,5 +479,66 @@ class DriveSyncServiceImplTest {
 
         // Phai hoi DB kem userId - khong duoc hoi bang moi drive_file_id
         verify(noteRepository).findAllByUserIdAndDriveFileId(USER_ID, "file-dung-chung");
+    }
+
+    // ---------- Bao cao thuc te 2026-08-24: doi ten note trong app, bam dong
+    // bo, nhung file tren Google Drive VAN GIU TEN CU vinh vien. ----------
+
+    @Test
+    void syncNote_doiTenTrenDrive_khiChiDoiTenChuKhongDoiNoiDung() {
+        // Day chinh la bug: doi ten KHONG lam doi noi dung, nen md5 van khop.
+        // Ban cu chi so md5 -> ket luan "khong co gi thay doi" -> bo qua
+        // update() -> ma ten file lai CHI duoc gui di ben trong update() do.
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Ten MOI.txt");
+        when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
+        when(fileStorageService.read(anyString())).thenReturn("noi dung KHONG doi");
+        when(googleDriveService.getFileMeta(drive, "file-id")).thenReturn(
+                new GoogleDriveService.DriveFileMeta(
+                        com.noted.backend.util.HashUtil.md5("noi dung KHONG doi"), // md5 KHOP
+                        "Ten cu.txt"));                                            // ten KHAC
+
+        service.syncNote(NOTE_ID);
+
+        // Phai doi ten tren Drive...
+        verify(googleDriveService).renameFile(drive, "file-id", "Ten MOI.txt");
+        // ...nhung KHONG tai lai noi dung (khong doi thi tai lai lam gi)
+        verify(googleDriveService, never()).updateFile(any(), any(), any(), any());
+        assertThat(note.getSyncState()).isEqualTo(SyncState.SYNCED);
+        assertThat(note.isDirty()).isFalse();
+    }
+
+    @Test
+    void syncNote_khongGoiApiNao_khiCaTenLanNoiDungDeuKhop() {
+        // Buoc toi uu VAN phai hoat dong: that su khong co gi thay doi thi
+        // khong duoc goi Drive API nao ca.
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Note.txt");
+        when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
+        when(fileStorageService.read(anyString())).thenReturn("y het");
+        when(googleDriveService.getFileMeta(drive, "file-id")).thenReturn(
+                new GoogleDriveService.DriveFileMeta(com.noted.backend.util.HashUtil.md5("y het"), "Note.txt"));
+
+        service.syncNote(NOTE_ID);
+
+        verify(googleDriveService, never()).updateFile(any(), any(), any(), any());
+        verify(googleDriveService, never()).renameFile(any(), any(), any());
+        assertThat(note.getSyncState()).isEqualTo(SyncState.SYNCED);
+    }
+
+    @Test
+    void syncNote_dayCaNoiDung_khiNoiDungVaTenCungDoi() {
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Ten MOI.txt");
+        when(noteRepository.findById(NOTE_ID)).thenReturn(Optional.of(note));
+        when(fileStorageService.read(anyString())).thenReturn("noi dung MOI");
+        when(googleDriveService.getFileMeta(drive, "file-id"))
+                .thenReturn(new GoogleDriveService.DriveFileMeta("md5-cu-khac", "Ten cu.txt"));
+
+        service.syncNote(NOTE_ID);
+
+        // update() da mang theo ca ten moi lan noi dung moi - khong can rename rieng
+        verify(googleDriveService).updateFile(drive, "file-id", "Ten MOI.txt", "noi dung MOI");
+        verify(googleDriveService, never()).renameFile(any(), any(), any());
     }
 }
