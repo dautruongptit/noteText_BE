@@ -658,9 +658,33 @@ public class DriveSyncServiceImpl implements DriveSyncService {
             return;
         }
 
+        // Doi ten TREN DRIVE -> ap nguoc ve note local. Phai xu ly TRUOC cho
+        // "noi dung khop thi return" ben duoi: doi ten khong lam doi noi dung
+        // nen md5 van khop, va ban cu thoat ngay tai do -> ten moi khong bao
+        // gio duoc ap ve. Day dung la lop loi DOI XUNG voi bug o chieu day len
+        // (2026-08-24): ca hai deu lay md5 lam dai dien cho "co gi thay doi
+        // khong", trong khi md5 chi noi ve NOI DUNG.
+        //
+        // Khong dat dirty=true: sau khi doi, ten local da KHOP Drive roi, day
+        // nguoc len nua la thua.
+        //
+        // Ten trung voi note khac van chap nhan duoc - rang buoc UNIQUE(ten) da
+        // duoc bo tu V4 (Drive cho phep trung ten), va nhanh tao note moi ben
+        // tren cung dang lay thang ten tu Drive theo dung tinh than do.
+        boolean tenDoiTrenDrive = driveFile.name() != null
+                && !driveFile.name().equals(note.getDisplayName());
+        if (tenDoiTrenDrive) {
+            log.info("Note {} doi ten theo Drive: '{}' -> '{}'",
+                    note.getId(), note.getDisplayName(), driveFile.name());
+            note.setDisplayName(driveFile.name());
+        }
+
         String localMd5 = HashUtil.md5(fileStorageService.read(note.getFilePath()));
         if (remoteMd5 != null && remoteMd5.equalsIgnoreCase(localMd5)) {
-            return; // noi dung khop nhau, khong co gi moi de pull ve
+            // Noi dung khong doi. Chi luu neu ten vua doi - tranh 1 lan ghi DB
+            // thua o truong hop that su khong co gi moi.
+            if (tenDoiTrenDrive) noteRepository.save(note);
+            return;
         }
 
         // Drive co thay doi that su (sua truc tiep tren Drive, hoac tu thiet

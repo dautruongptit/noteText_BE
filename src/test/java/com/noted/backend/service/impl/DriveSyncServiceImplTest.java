@@ -541,4 +541,96 @@ class DriveSyncServiceImplTest {
         verify(googleDriveService).updateFile(drive, "file-id", "Ten MOI.txt", "noi dung MOI");
         verify(googleDriveService, never()).renameFile(any(), any(), any());
     }
+
+    // ---------- Lop loi DOI XUNG voi bug day len 2026-08-24: doi ten file
+    // TREN DRIVE thi app cung khong nhan ve, vi pullOneFile() cung lay md5 lam
+    // dai dien cho "co gi thay doi khong" - ma md5 chi noi ve NOI DUNG. ------
+
+    private User userCoPageToken() {
+        User user = User.builder().driveConnected(true).driveFolderId("folder-1")
+                .driveChangesPageToken("existing-page-token").build();
+        user.setId(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+        when(googleDriveService.buildClient(user)).thenReturn(drive);
+        return user;
+    }
+
+    @Test
+    void pullFromDrive_doiTenNoteTheoDrive_khiChiDoiTenChuKhongDoiNoiDung() {
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Ten cu.txt");
+        note.setDirty(false);
+        note.setSyncState(SyncState.SYNCED);
+
+        userCoPageToken();
+        GoogleDriveService.DriveFileInfo doiTen = new GoogleDriveService.DriveFileInfo(
+                "file-id", "Ten MOI tren Drive.txt", 10L, null, true, "text/plain");
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(doiTen), List.of(), "new-page-token"));
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "file-id")).thenReturn(List.of(note));
+        when(googleDriveService.isFileTrashed(drive, "file-id")).thenReturn(false);
+        when(fileStorageService.read(anyString())).thenReturn("noi dung KHONG doi");
+        // md5 KHOP -> ban cu thoat ngay tai day, ten moi khong bao gio duoc ap ve
+        when(googleDriveService.getFileMeta(drive, "file-id")).thenReturn(
+                new GoogleDriveService.DriveFileMeta(
+                        com.noted.backend.util.HashUtil.md5("noi dung KHONG doi"), "Ten MOI tren Drive.txt"));
+
+        service.pullFromDrive(USER_ID);
+
+        assertThat(note.getDisplayName()).isEqualTo("Ten MOI tren Drive.txt");
+        // Ten local gio DA khop Drive -> khong duoc danh dau dirty (day nguoc len la thua)
+        assertThat(note.isDirty()).isFalse();
+        // Khong tai lai noi dung: noi dung co doi dau ma tai
+        verify(googleDriveService, never()).downloadFileContent(any(), anyString());
+        verify(noteRepository).save(note);
+    }
+
+    @Test
+    void pullFromDrive_giuTenLocal_khiNoteDangDirty() {
+        // Local vua doi ten, chua kip day len -> ten local phai THANG, khong
+        // duoc bi ten cu tren Drive ghi de nguoc lai.
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Ten local vua doi.txt");
+        note.setDirty(true);
+        note.setDriveSyncedContentHash(com.noted.backend.util.HashUtil.md5("noi dung"));
+
+        userCoPageToken();
+        GoogleDriveService.DriveFileInfo tenCu = new GoogleDriveService.DriveFileInfo(
+                "file-id", "Ten cu tren Drive.txt", 10L, null, true, "text/plain");
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(tenCu), List.of(), "new-page-token"));
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "file-id")).thenReturn(List.of(note));
+        when(googleDriveService.isFileTrashed(drive, "file-id")).thenReturn(false);
+        when(googleDriveService.getFileMeta(drive, "file-id")).thenReturn(
+                new GoogleDriveService.DriveFileMeta(
+                        com.noted.backend.util.HashUtil.md5("noi dung"), "Ten cu tren Drive.txt"));
+
+        service.pullFromDrive(USER_ID);
+
+        assertThat(note.getDisplayName()).isEqualTo("Ten local vua doi.txt");
+    }
+
+    @Test
+    void pullFromDrive_khongGhiDB_khiCaTenLanNoiDungDeuKhop() {
+        Note note = noteWithDriveFile(NOTE_ID, "file-id");
+        note.setDisplayName("Note.txt");
+        note.setDirty(false);
+        note.setSyncState(SyncState.SYNCED);
+
+        userCoPageToken();
+        GoogleDriveService.DriveFileInfo khongDoi = new GoogleDriveService.DriveFileInfo(
+                "file-id", "Note.txt", 10L, null, true, "text/plain");
+        when(googleDriveService.listChanges(drive, "existing-page-token", "folder-1")).thenReturn(
+                new GoogleDriveService.ChangesResult(List.of(khongDoi), List.of(), "new-page-token"));
+        when(noteRepository.findAllByUserIdAndDriveFileId(USER_ID, "file-id")).thenReturn(List.of(note));
+        when(googleDriveService.isFileTrashed(drive, "file-id")).thenReturn(false);
+        when(fileStorageService.read(anyString())).thenReturn("y het");
+        when(googleDriveService.getFileMeta(drive, "file-id")).thenReturn(
+                new GoogleDriveService.DriveFileMeta(com.noted.backend.util.HashUtil.md5("y het"), "Note.txt"));
+
+        service.pullFromDrive(USER_ID);
+
+        verify(noteRepository, never()).save(note);
+        verify(googleDriveService, never()).downloadFileContent(any(), anyString());
+    }
 }
