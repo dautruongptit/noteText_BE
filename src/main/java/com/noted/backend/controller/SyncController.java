@@ -73,28 +73,34 @@ public class SyncController {
                     continue;
                 }
 
-                if (item.baseVersion() != null && item.baseVersion() != existing.getVersion()) {
-                    // Version client cam KHAC version hien tai cua server (VD da sua tu
-                    // thiet bi/phien khac trong luc item nay con nam cho trong hang doi
-                    // offline) - dung "version" (so nguyen tang dan) thay cho so sanh
-                    // timestamp cu, tranh sai lech do dong ho he thong. GIU CA 2 BAN: note
-                    // server giu nguyen (van la "ban thang"), ban local duoc tach thanh 1
-                    // note MOI rieng ("ban xung dot") - xem NoteServiceImpl.createConflictCopy().
-                    // Client se tu xoa item nay khoi hang doi offline (status khac "conflict"
-                    // cu, xem useOfflineSync.ts) vi du lieu da duoc luu an toan o note moi.
-                    var conflictCopy = noteService.createConflictCopy(userId, existing.getDisplayName(), item.content());
-                    results.add(Map.of(
-                            "noteId", item.noteId(),
-                            "status", "conflict_kept_both",
-                            "serverVersion", existing.getVersion(),
-                            "conflictCopyId", conflictCopy.id(),
-                            "conflictCopyName", conflictCopy.displayName()
-                    ));
-                    continue;
-                }
+                // Version client cam KHAC version hien tai cua server (VD note da bi
+                // sua tu 1 TRINH DUYET KHAC cua chinh nguoi dung trong luc item nay con
+                // nam cho trong hang doi offline).
+                //
+                // Truoc day: tach ban local thanh 1 note MOI co hau to "(xung dot ...)".
+                // Doi tu 2026-09-15 sang GHI DE, theo yeu cau "chi co 1 file goc duy
+                // nhat". Ly do chap nhan duoc: duong luu BINH THUONG (updateContent)
+                // von da la ghi-de-ai-sau-thang tu dau, nen tach file o rieng duong
+                // hang doi offline chi tao ra su khong nhat quan - cung 1 hanh dong
+                // sua note, luu duoc ngay thi ghi de, luu that bai roi retry thi lai
+                // de ra file thu hai.
+                //
+                // An toan cua viec ghi de nay DUA VAO co che lam moi o client (xem
+                // App.tsx: kiem tra ban moi hon khi quay lai tab) - trinh duyet nao
+                // cung tu keo ban moi nhat ve truoc khi nguoi dung go tiep, nen canh
+                // "ghi de mat chu" tro nen hiem. Bo lam moi do di thi phai can nhac
+                // lai cho nay.
+                //
+                // Van bao rieng "synced_overwritten" (khong gop vao "synced") de client
+                // biet ma keo lai noi dung - ban trong editor luc do da cu.
+                boolean daGhiDeBanMoiHon =
+                        item.baseVersion() != null && item.baseVersion() != existing.getVersion();
 
                 noteService.updateContent(userId, item.noteId(), new UpdateContentRequest(item.content()));
-                results.add(Map.of("noteId", item.noteId(), "status", "synced"));
+                results.add(Map.of(
+                        "noteId", item.noteId(),
+                        "status", daGhiDeBanMoiHon ? "synced_overwritten" : "synced"
+                ));
 
             } catch (Exception e) {
                 results.add(Map.of(
